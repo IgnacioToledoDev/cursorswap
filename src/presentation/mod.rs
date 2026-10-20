@@ -1,0 +1,16 @@
+use crate::domain::ports::{
+    CurrentCursorProvider, CursorApplier, CursorRepository, ThemeInspector,
+};
+
+pub mod cli;
+pub mod exit_code;
+pub mod output;
+pub mod tui;
+
+/// Everything the presentation layer needs, injected by the composition root.
+pub struct Services {
+    pub repo: Box<dyn CursorRepository>,
+    pub inspector: Box<dyn ThemeInspector>,
+    pub current: Box<dyn CurrentCursorProvider>,
+    pub appliers: Vec<Box<dyn CursorApplier>>,
+}

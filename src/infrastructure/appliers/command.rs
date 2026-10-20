@@ -14,6 +14,7 @@ pub trait CommandRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, io::Error>;
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {

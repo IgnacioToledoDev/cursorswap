@@ -6,4 +6,4 @@ pub mod list;
 pub mod remove;
 
 #[cfg(test)]
-mod fakes;
+pub(crate) mod fakes;

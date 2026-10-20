@@ -83,11 +83,8 @@ fn storage(path: &Path, e: io::Error) -> RepositoryError {
     RepositoryError::Storage(format!("{}: {e}", path.display()))
 }
 
-pub fn default_registry_path() -> Option<PathBuf> {
-    registry_path_from(|key| std::env::var_os(key))
-}
-
-fn registry_path_from(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+/// Registry location derived from the given environment lookup.
+pub fn registry_path_from(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let non_empty = |key| env(key).filter(|v| !v.is_empty());
     let base = match non_empty("XDG_CONFIG_HOME") {
         Some(xdg) => PathBuf::from(xdg),

@@ -14,6 +14,10 @@ pub trait CursorApplier {
     fn apply(&self, theme: &CursorTheme) -> Result<(), ApplyError>;
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "preview is consumed by the TUI in T7")
+)]
 pub trait PreviewLoader {
     fn load(&self, theme: &CursorTheme) -> Result<Preview, PreviewError>;
 }
