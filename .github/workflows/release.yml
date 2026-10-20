@@ -138,4 +138,11 @@ jobs:
           else
             channel="--latest"
           fi
-          gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag "$channel"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # The release was already created (for example from the GitHub UI):
+            # attach the binaries and align its channel instead of failing.
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" "$channel"
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag "$channel"
+          fi
