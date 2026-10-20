@@ -1,7 +1,7 @@
 //! Rendering: a pure function of `App` state.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect, Size};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect, Size};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
@@ -44,6 +44,30 @@ fn areas(area: Rect) -> Areas {
 /// Cell size requested for the preview image: half of the bordered pane interior.
 pub fn preview_size(area: Rect) -> Size {
     half(Block::bordered().inner(areas(area).preview).as_size())
+}
+
+/// Whether a terminal cell is inside the list pane (borders included).
+pub fn over_list(area: Rect, column: u16, row: u16) -> bool {
+    areas(area).list.contains(Position::new(column, row))
+}
+
+/// The theme list row under a terminal cell, `None` outside the rows. Mirrors
+/// `render_list`: a bordered block, one-line items and a fresh `ListState`, so
+/// the offset only scrolls far enough to keep the selection on the last row.
+pub fn list_row_at(
+    area: Rect,
+    count: usize,
+    selected: usize,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let inner = Block::bordered().inner(areas(area).list);
+    if !inner.contains(Position::new(column, row)) {
+        return None;
+    }
+    let offset = (selected + 1).saturating_sub(inner.height as usize);
+    let index = offset + usize::from(row - inner.y);
+    (index < count).then_some(index)
 }
 
 fn half(size: Size) -> Size {
@@ -311,6 +335,63 @@ mod tests {
             latest: "0.2.0".into(),
         });
         (app, services)
+    }
+
+    fn many_themes(count: usize) -> Vec<CursorTheme> {
+        (0..count)
+            .map(|i| theme(&format!("T{i:02}"), None))
+            .collect()
+    }
+
+    /// The screen row whose text starts with the selection marker.
+    fn highlighted_row(lines: &[String]) -> u16 {
+        lines.iter().position(|l| l.contains("> ")).unwrap() as u16
+    }
+
+    #[test]
+    fn rows_map_to_themes_inside_the_list_borders() {
+        // 100x24: list is x 0..40, interior rows 1..=21 (main is 22 high).
+        assert_eq!(list_row_at(Rect::new(0, 0, 100, 24), 3, 0, 5, 1), Some(0));
+        assert_eq!(list_row_at(Rect::new(0, 0, 100, 24), 3, 0, 5, 3), Some(2));
+    }
+
+    #[test]
+    fn cells_off_the_rows_map_to_nothing() {
+        let area = Rect::new(0, 0, 100, 24);
+        // below the last item, border, title row, preview, status, help
+        assert_eq!(list_row_at(area, 3, 0, 5, 4), None);
+        assert_eq!(list_row_at(area, 3, 0, 0, 1), None);
+        assert_eq!(list_row_at(area, 3, 0, 5, 0), None);
+        assert_eq!(list_row_at(area, 3, 0, 60, 2), None);
+        assert_eq!(list_row_at(area, 3, 0, 5, 22), None);
+        assert_eq!(list_row_at(area, 3, 0, 5, 23), None);
+        assert_eq!(list_row_at(area, 0, 0, 5, 1), None);
+    }
+
+    #[test]
+    fn a_scrolled_list_maps_clicks_through_the_offset() {
+        let (mut app, _s) = app_with(
+            many_themes(30),
+            None,
+            FakePreviewLoader::returning(two_tone()),
+        );
+        app.selected = 25;
+        let lines = draw(&mut app, 100, 12);
+        let row = highlighted_row(&lines);
+        assert!(
+            lines[row as usize].contains("T25"),
+            "{}",
+            lines[row as usize]
+        );
+        let area = Rect::new(0, 0, 100, 12);
+        for y in 1..=8u16 {
+            let index = list_row_at(area, 30, 25, 5, y).unwrap();
+            assert!(
+                lines[y as usize].contains(&format!("T{index:02}")),
+                "row {y} shows {:?} but maps to {index}",
+                lines[y as usize]
+            );
+        }
     }
 
     #[test]

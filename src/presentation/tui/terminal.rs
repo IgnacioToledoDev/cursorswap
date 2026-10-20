@@ -5,6 +5,7 @@
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 
@@ -32,13 +33,21 @@ impl TerminalSession {
         if let Ok(picker) = Picker::from_query_stdio() {
             session.picker = picker;
         }
+        // After the query, which reads stdin. `ratatui::restore` does not turn
+        // capture off, so `Drop` and the panic hook do.
+        execute!(io::stdout(), EnableMouseCapture)?;
+        install_panic_hook();
         Ok(session)
     }
 
     /// Gives the terminal back to `run` (an interactive child such as yay) and
     /// takes it over again afterwards, on every exit path of `run`.
     pub fn suspend<R>(&mut self, run: impl FnOnce() -> R) -> io::Result<R> {
-        let result = with_suspended(ratatui::try_restore, enter, run)?;
+        let result = with_suspended(
+            || leave(disable_mouse_capture, ratatui::try_restore),
+            enter,
+            run,
+        )?;
         // The child drew over the screen: forget what ratatui believes is on it.
         self.terminal.clear()?;
         Ok(result)
@@ -47,7 +56,31 @@ impl TerminalSession {
 
 fn enter() -> io::Result<()> {
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+}
+
+fn disable_mouse_capture() -> io::Result<()> {
+    execute!(io::stdout(), DisableMouseCapture)
+}
+
+/// Turns capture off first, then restores. A failed disable must not keep the
+/// terminal from being restored, so its error is dropped.
+fn leave(
+    disable_capture: impl FnOnce() -> io::Result<()>,
+    restore: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let _ = disable_capture();
+    restore()
+}
+
+/// Chains in front of the hook `try_init` installed (which restores the
+/// terminal), so a panic message is not printed with capture still on.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_mouse_capture();
+        previous(info);
+    }));
 }
 
 /// Runs `run` between `leave` and `enter`. When `leave` fails, `run` is skipped
@@ -69,7 +102,10 @@ fn with_suspended<R>(
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        ratatui::restore();
+        let _ = leave(disable_mouse_capture, || {
+            ratatui::restore();
+            Ok(())
+        });
     }
 }
 
@@ -83,6 +119,31 @@ mod tests {
     fn step(steps: &Steps, name: &'static str) -> io::Result<()> {
         steps.borrow_mut().push(name);
         Ok(())
+    }
+
+    #[test]
+    fn mouse_capture_is_disabled_before_the_terminal_is_restored() {
+        let steps = Steps::default();
+        let result = leave(
+            || step(&steps, "disable capture"),
+            || step(&steps, "restore"),
+        );
+        assert!(result.is_ok());
+        assert_eq!(*steps.borrow(), ["disable capture", "restore"]);
+    }
+
+    #[test]
+    fn a_failing_capture_disable_does_not_skip_the_restore() {
+        let steps = Steps::default();
+        let result = leave(
+            || {
+                steps.borrow_mut().push("disable capture");
+                Err(io::Error::other("closed"))
+            },
+            || step(&steps, "restore"),
+        );
+        assert!(result.is_ok());
+        assert_eq!(*steps.borrow(), ["disable capture", "restore"]);
     }
 
     #[test]

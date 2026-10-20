@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Size;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Rect, Size};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 
 use super::preview::{PreviewCache, PreviewEntry};
+use super::view;
 use crate::application::add::AddInput;
 use crate::application::apply::{ApplyOutcome, ApplyReport, ApplyStatus};
 use crate::application::install::{InstallInput, InstallReport};
@@ -173,6 +174,40 @@ impl App {
         // An offer that arrived mid-task opens as soon as the task is over.
         self.open_pending_offer();
         outcome
+    }
+
+    /// Left click selects the row under the pointer; the wheel over the list
+    /// moves the selection by one. Browse mode only, and never applies.
+    /// `area` is the full terminal area. Returns whether the selection moved,
+    /// which is when a redraw is needed.
+    pub fn handle_mouse(&mut self, event: MouseEvent, area: Rect, services: &Services) -> bool {
+        if self.mode != Mode::Browse {
+            return false;
+        }
+        let target = match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => view::list_row_at(
+                area,
+                self.themes.len(),
+                self.selected,
+                event.column,
+                event.row,
+            ),
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                view::over_list(area, event.column, event.row).then(|| {
+                    if event.kind == MouseEventKind::ScrollDown {
+                        self.selected.saturating_add(1)
+                    } else {
+                        self.selected.saturating_sub(1)
+                    }
+                })
+            }
+            _ => None,
+        };
+        let before = self.selected;
+        if let Some(index) = target {
+            self.select(index, services);
+        }
+        self.selected != before
     }
 
     fn open_pending_offer(&mut self) {
@@ -893,6 +928,153 @@ mod tests {
         assert_eq!(h.app.selected, 0);
         assert_eq!(h.app.mode, Mode::Browse);
         assert!(h.app.selected_theme().is_none());
+    }
+
+    // --- mouse ---
+
+    const SCREEN: Rect = Rect::new(0, 0, 100, 24);
+
+    fn mouse(h: &mut Harness, kind: MouseEventKind, column: u16, row: u16) -> bool {
+        let event = MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        h.app.handle_mouse(event, SCREEN, &h.services)
+    }
+
+    fn click(h: &mut Harness, column: u16, row: u16) -> bool {
+        mouse(h, MouseEventKind::Down(MouseButton::Left), column, row)
+    }
+
+    /// Interior row `n` of the theme list (the border takes screen row 0).
+    fn list_row(n: u16) -> u16 {
+        n + 1
+    }
+
+    #[test]
+    fn a_click_selects_that_row_and_loads_its_preview_once() {
+        let mut h = harness(two_themes());
+        assert!(click(&mut h, 5, list_row(1)));
+        assert_eq!(h.app.selected, 1);
+        assert!(!click(&mut h, 5, list_row(1)));
+        assert_eq!(
+            *h.loads.borrow(),
+            [
+                PathBuf::from("/icons/Nordzy"),
+                PathBuf::from("/icons/Bibata")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_click_never_applies_a_theme() {
+        let mut h = harness(two_themes());
+        click(&mut h, 5, list_row(1));
+        click(&mut h, 5, list_row(0));
+        assert!(h.calls.borrow().is_empty());
+        assert_eq!(h.app.active, None);
+    }
+
+    #[test]
+    fn clicks_off_the_rows_change_nothing() {
+        let mut h = harness(two_themes());
+        for (column, row) in [
+            (5, 0),            // top border and title
+            (0, list_row(1)),  // left border
+            (39, list_row(1)), // right border
+            (5, list_row(2)),  // below the last item
+            (5, 21),           // bottom border
+            (5, 22),           // status
+            (5, 23),           // help
+            (60, list_row(1)), // preview pane
+        ] {
+            assert!(!click(&mut h, column, row), "({column}, {row})");
+            assert_eq!(h.app.selected, 0, "({column}, {row})");
+        }
+        assert_eq!(h.loads.borrow().len(), 1);
+    }
+
+    #[test]
+    fn clicks_and_wheel_are_safe_on_an_empty_list() {
+        let mut h = harness(vec![]);
+        assert!(!click(&mut h, 5, list_row(0)));
+        assert!(!mouse(&mut h, MouseEventKind::ScrollDown, 5, list_row(0)));
+        assert_eq!(h.app.selected, 0);
+    }
+
+    #[test]
+    fn only_a_left_press_selects() {
+        let mut h = harness(two_themes());
+        for kind in [
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Down(MouseButton::Middle),
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Moved,
+        ] {
+            assert!(!mouse(&mut h, kind, 5, list_row(1)), "{kind:?}");
+            assert_eq!(h.app.selected, 0, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_wheel_moves_the_selection_and_clamps_at_both_ends() {
+        let mut h = harness(two_themes());
+        assert!(!mouse(&mut h, MouseEventKind::ScrollUp, 5, list_row(0)));
+        assert_eq!(h.app.selected, 0);
+        assert!(mouse(&mut h, MouseEventKind::ScrollDown, 5, list_row(0)));
+        assert_eq!(h.app.selected, 1);
+        assert!(!mouse(&mut h, MouseEventKind::ScrollDown, 5, list_row(0)));
+        assert_eq!(h.app.selected, 1);
+        assert!(mouse(&mut h, MouseEventKind::ScrollUp, 5, list_row(0)));
+        assert_eq!(h.app.selected, 0);
+    }
+
+    #[test]
+    fn the_wheel_only_works_over_the_list() {
+        let mut h = harness(two_themes());
+        assert!(!mouse(&mut h, MouseEventKind::ScrollDown, 60, list_row(0)));
+        assert!(!mouse(&mut h, MouseEventKind::ScrollDown, 5, 23));
+        assert_eq!(h.app.selected, 0);
+    }
+
+    #[test]
+    fn a_click_does_not_wipe_the_status() {
+        let mut h = harness(two_themes());
+        h.app.status = "applied Nordzy".into();
+        click(&mut h, 5, list_row(1));
+        assert_eq!(h.app.status, "applied Nordzy");
+    }
+
+    #[test]
+    fn prompts_and_modals_ignore_the_mouse() {
+        let wheel = MouseEventKind::ScrollDown;
+        let (mut h, _probe) = update_harness();
+        h.app.on_update_status(available_v("9.9.9"));
+        assert_eq!(h.app.mode, Mode::UpdatePrompt);
+        assert!(!click(&mut h, 5, list_row(1)));
+        assert!(!mouse(&mut h, wheel, 5, list_row(0)));
+        assert_eq!((h.app.selected, h.app.mode), (0, Mode::UpdatePrompt));
+
+        for keys in ["a", "a/tmp/x\n", "d", "/", "/nord\n", "/nord\n\n"] {
+            let mut h = harness(two_themes());
+            packages_with(&mut h, aur_fake);
+            for c in keys.chars() {
+                match c {
+                    '\n' => press(&mut h, KeyCode::Enter),
+                    c => ch(&mut h, c),
+                };
+            }
+            let mode = h.app.mode;
+            assert_ne!(mode, Mode::Browse, "{keys:?}");
+            let (selected, result) = (h.app.selected, h.app.result_selected);
+            assert!(!click(&mut h, 5, list_row(1)), "{keys:?} {mode:?}");
+            assert!(!mouse(&mut h, wheel, 5, list_row(0)), "{keys:?} {mode:?}");
+            assert_eq!(h.app.mode, mode);
+            assert_eq!((h.app.selected, h.app.result_selected), (selected, result));
+        }
     }
 
     // --- preview loading ---
