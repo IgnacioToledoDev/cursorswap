@@ -305,18 +305,25 @@ When you run `cursorswap` from a terminal, it checks GitHub for a newer **stable
 
 ```
 A new version of cursorswap is available: 0.2.0 (you have 0.1.0).
+
+What's Changed:
+• feat: faster swaps by @user in https://github.com/IgnacioToledoDev/cursorswap/pull/12
+
+Changelog: https://github.com/IgnacioToledoDev/cursorswap/releases/tag/v0.2.0
 Update now? [y]es / [n]o / [s]kip this version
 ```
 
-- **yes** downloads the release, verifies its SHA-256 checksum, replaces the binary atomically and re-runs your command on the new version. The TUI shows the same choice as a modal.
+The release notes are GitHub's generated notes for the release, shown as plain text (at most 20 lines, about 2 KiB; longer notes end with `... (truncated)`) followed by a link to the full changelog. Release text comes from the network, so terminal escape sequences and control characters are stripped before anything is printed, and links are shown as plain text. If the release has no notes, only the link is shown. When your installed version is several releases behind, the link points to the GitHub compare page between your version and the latest. The notes and link are cached with the version, so showing them needs no extra request.
+
+- **yes** downloads the release, verifies its SHA-256 checksum, replaces the binary atomically and re-runs your command on the new version. The TUI shows the same choice as a modal with a short summary (about 4 lines) and the link, and ends with `... full notes: <link>` when there is more.
 - **no** continues; you are asked again once the cache expires.
 - **skip** remembers that version and stays quiet until a newer one is released.
 
 Any failure (offline, rate limited, bad response) is silent and never blocks your command. Nothing is installed without an explicit yes.
 
 ```sh
-cursorswap update --check   # print installed and latest versions; exit 0 up to date, 10 update available, 1 error
-cursorswap update           # install the latest release after confirmation
+cursorswap update --check   # print installed and latest versions, the release notes and link; exit 0 up to date, 10 update available, 1 error
+cursorswap update           # show the release notes, then install the latest release after confirmation
 cursorswap update --yes     # install without asking
 ```
 
