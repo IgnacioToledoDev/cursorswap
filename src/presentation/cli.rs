@@ -401,12 +401,4 @@ mod execute_tests {
         let r = run(&["remove", "ghost"], &[]);
         assert_eq!(r.exit, Exit::NotFound);
     }
-
-    #[test]
-    fn no_arguments_open_the_tui_placeholder() {
-        let r = run(&[], &[false]);
-        assert_eq!(r.exit, Exit::Error);
-        assert!(r.err.contains("not implemented"));
-        assert!(r.log.borrow().is_empty());
-    }
 }

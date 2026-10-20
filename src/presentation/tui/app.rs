@@ -1,0 +1,822 @@
+//! TUI state and input handling. Pure with respect to the terminal: every
+//! side effect goes through the application use cases held by `Services`.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Size;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::Protocol;
+
+use super::preview::{PreviewCache, PreviewEntry};
+use crate::application::add::AddInput;
+use crate::application::apply::{ApplyOutcome, ApplyReport, ApplyStatus};
+use crate::application::{add, apply, list, remove};
+use crate::domain::cursor::CursorTheme;
+use crate::presentation::Services;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Browse,
+    PathInput,
+    AliasInput,
+    ConfirmRemove,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Continue,
+    Quit,
+}
+
+pub struct App {
+    pub themes: Vec<CursorTheme>,
+    pub selected: usize,
+    pub active: Option<String>,
+    pub mode: Mode,
+    pub input: String,
+    pub status: String,
+    pending_path: Option<PathBuf>,
+    previews: PreviewCache,
+    picker: Picker,
+}
+
+impl App {
+    pub fn new(picker: Picker, services: &Services) -> App {
+        let mut app = App {
+            themes: Vec::new(),
+            selected: 0,
+            active: None,
+            mode: Mode::Browse,
+            input: String::new(),
+            status: String::new(),
+            pending_path: None,
+            previews: PreviewCache::default(),
+            picker,
+        };
+        app.refresh(services, None);
+        app
+    }
+
+    /// Same definition as the CLI `list`: case-insensitive name match.
+    pub fn is_active(&self, theme: &CursorTheme) -> bool {
+        self.active
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(&theme.name))
+    }
+
+    pub fn selected_theme(&self) -> Option<&CursorTheme> {
+        self.themes.get(self.selected)
+    }
+
+    pub fn selected_preview(&self) -> Option<&PreviewEntry> {
+        self.previews.get(&self.selected_theme()?.path)
+    }
+
+    pub fn current_protocol(&self) -> Option<&Protocol> {
+        match self.selected_preview()? {
+            PreviewEntry::Loaded(loaded) => loaded.current_protocol(),
+            PreviewEntry::Failed(_) => None,
+        }
+    }
+
+    /// Encodes the selected preview's current frame for a pane of `size` cells.
+    pub fn prepare_preview(&mut self, size: Size) {
+        let Some(path) = self.themes.get(self.selected).map(|t| t.path.clone()) else {
+            return;
+        };
+        if let Some(PreviewEntry::Loaded(loaded)) = self.previews.get_mut(&path) {
+            loaded.prepare(&self.picker, size);
+        }
+    }
+
+    /// Advances the selected preview's animation; returns whether to redraw.
+    pub fn tick(&mut self, elapsed: Duration) -> bool {
+        let Some(path) = self.themes.get(self.selected).map(|t| t.path.clone()) else {
+            return false;
+        };
+        match self.previews.get_mut(&path) {
+            Some(PreviewEntry::Loaded(loaded)) => loaded.tick(elapsed),
+            _ => false,
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent, services: &mut Services) -> Outcome {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            return Outcome::Quit;
+        }
+        match self.mode {
+            Mode::Browse => self.browse_key(key.code, services),
+            Mode::PathInput | Mode::AliasInput => self.input_key(key.code, services),
+            Mode::ConfirmRemove => self.confirm_key(key.code, services),
+        }
+    }
+
+    fn browse_key(&mut self, code: KeyCode, services: &mut Services) -> Outcome {
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => return Outcome::Quit,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.select(self.selected.saturating_add(1), services)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.select(self.selected.saturating_sub(1), services)
+            }
+            KeyCode::Enter => self.apply_selected(services),
+            KeyCode::Char('a') => {
+                self.mode = Mode::PathInput;
+                self.input.clear();
+                self.status.clear();
+            }
+            KeyCode::Char('d') if self.selected_theme().is_some() => {
+                self.mode = Mode::ConfirmRemove;
+            }
+            _ => {}
+        }
+        Outcome::Continue
+    }
+
+    fn input_key(&mut self, code: KeyCode, services: &mut Services) -> Outcome {
+        match code {
+            KeyCode::Esc => self.cancel_prompt(),
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) => self.input.push(c),
+            KeyCode::Enter if self.mode == Mode::PathInput => self.submit_path(),
+            KeyCode::Enter => self.submit_alias(services),
+            _ => {}
+        }
+        Outcome::Continue
+    }
+
+    fn confirm_key(&mut self, code: KeyCode, services: &mut Services) -> Outcome {
+        self.mode = Mode::Browse;
+        if code == KeyCode::Char('y') {
+            self.remove_selected(services);
+        }
+        Outcome::Continue
+    }
+
+    fn select(&mut self, index: usize, services: &Services) {
+        if self.themes.is_empty() {
+            return;
+        }
+        self.selected = index.min(self.themes.len() - 1);
+        self.load_selected_preview(services);
+    }
+
+    fn load_selected_preview(&mut self, services: &Services) {
+        if let Some(theme) = self.themes.get(self.selected) {
+            self.previews.ensure(theme, services.preview.as_ref());
+        }
+    }
+
+    /// Reloads the registry and the active name; keeps the selection on
+    /// `select` when given, otherwise clamps the previous index.
+    fn refresh(&mut self, services: &Services, select: Option<&str>) {
+        match list::list(services.repo.as_ref()) {
+            Ok(themes) => self.themes = themes,
+            Err(err) => {
+                self.themes.clear();
+                self.status = format!("error: {err}");
+            }
+        }
+        self.refresh_active(services);
+        let wanted = select.and_then(|name| self.themes.iter().position(|t| t.name == name));
+        self.selected = wanted.unwrap_or(self.selected);
+        self.selected = self.selected.min(self.themes.len().saturating_sub(1));
+        self.load_selected_preview(services);
+    }
+
+    // The marker is cosmetic: an unreadable config must not hide the list.
+    fn refresh_active(&mut self, services: &Services) {
+        self.active = services.current.current_name().ok().flatten();
+    }
+
+    fn apply_selected(&mut self, services: &Services) {
+        let Some(theme) = self.selected_theme() else {
+            self.status = "no theme to apply: press a to add one".to_string();
+            return;
+        };
+        let query = theme.name.clone();
+        match apply::apply(services.repo.as_ref(), &services.appliers, &query) {
+            Ok(report) => {
+                self.status = summarize_apply(&report);
+                if report.status() == ApplyStatus::AllApplied {
+                    self.active = Some(report.theme.name);
+                } else {
+                    self.refresh_active(services);
+                }
+            }
+            Err(err) => self.status = format!("error: {err}"),
+        }
+    }
+
+    fn cancel_prompt(&mut self) {
+        self.mode = Mode::Browse;
+        self.input.clear();
+        self.pending_path = None;
+    }
+
+    fn submit_path(&mut self) {
+        let path = self.input.trim().to_string();
+        self.input.clear();
+        if path.is_empty() {
+            self.cancel_prompt();
+            return;
+        }
+        self.pending_path = Some(PathBuf::from(path));
+        self.mode = Mode::AliasInput;
+    }
+
+    fn submit_alias(&mut self, services: &mut Services) {
+        let alias = self.input.trim().to_string();
+        let path = self.pending_path.take();
+        self.cancel_prompt();
+        let Some(path) = path else { return };
+        let input = AddInput {
+            path,
+            name: None,
+            alias: (!alias.is_empty()).then_some(alias),
+        };
+        match add::add(services.repo.as_mut(), services.inspector.as_ref(), input) {
+            Ok(theme) => {
+                self.status = format!("added {}", theme.name);
+                self.refresh(services, Some(&theme.name));
+            }
+            Err(err) => self.status = format!("error: {err}"),
+        }
+    }
+
+    fn remove_selected(&mut self, services: &mut Services) {
+        let Some(name) = self.selected_theme().map(|t| t.name.clone()) else {
+            return;
+        };
+        match remove::remove(services.repo.as_mut(), &name) {
+            Ok(theme) => {
+                self.status = format!("removed {}", theme.name);
+                self.refresh(services, None);
+            }
+            Err(err) => self.status = format!("error: {err}"),
+        }
+    }
+}
+
+fn summarize_apply(report: &ApplyReport) -> String {
+    let total = report.entries.len();
+    let failed: Vec<String> = report
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.outcome {
+            ApplyOutcome::Ok => None,
+            ApplyOutcome::Failed(msg) => Some(format!("{}: {msg}", entry.label)),
+        })
+        .collect();
+    let ok = total - failed.len();
+    let mut text = format!(
+        "applied {}: {ok} of {total} steps succeeded",
+        report.theme.name
+    );
+    if !failed.is_empty() {
+        text.push_str(&format!("; failed {}", failed.join(", ")));
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::application::fakes::{
+        CallLog, FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, applier, theme,
+    };
+    use crate::domain::ports::{Preview, PreviewFrame};
+
+    struct Harness {
+        app: App,
+        services: Services,
+        calls: CallLog,
+        loads: Rc<RefCell<Vec<PathBuf>>>,
+    }
+
+    fn one_frame() -> Preview {
+        Preview {
+            frames: vec![PreviewFrame {
+                width: 2,
+                height: 2,
+                rgba: vec![255; 16],
+                delay_ms: 0,
+            }],
+        }
+    }
+
+    fn harness_with(
+        repo: FakeRepository,
+        failing_appliers: &[bool],
+        current: Option<&str>,
+        loader: FakePreviewLoader,
+    ) -> Harness {
+        let calls = CallLog::default();
+        let loads = Rc::clone(&loader.loads);
+        let appliers = failing_appliers
+            .iter()
+            .enumerate()
+            .map(|(i, fail)| applier(["alpha", "beta", "gamma"][i], *fail, &calls))
+            .collect();
+        let services = Services {
+            repo: Box::new(repo),
+            inspector: Box::new(FakeInspector {
+                valid: true,
+                name: Some("Dir".to_string()),
+            }),
+            current: Box::new(FakeCurrent(Ok(current.map(String::from)))),
+            preview: Box::new(loader),
+            appliers,
+        };
+        let app = App::new(Picker::halfblocks(), &services);
+        Harness {
+            app,
+            services,
+            calls,
+            loads,
+        }
+    }
+
+    fn harness(themes: Vec<CursorTheme>) -> Harness {
+        harness_with(
+            FakeRepository::with(themes),
+            &[false],
+            None,
+            FakePreviewLoader::returning(one_frame()),
+        )
+    }
+
+    fn two_themes() -> Vec<CursorTheme> {
+        vec![theme("Nordzy", Some("nz")), theme("Bibata", None)]
+    }
+
+    fn press(h: &mut Harness, code: KeyCode) -> Outcome {
+        h.app
+            .handle_key(KeyEvent::new(code, KeyModifiers::NONE), &mut h.services)
+    }
+
+    fn ch(h: &mut Harness, c: char) -> Outcome {
+        press(h, KeyCode::Char(c))
+    }
+
+    fn type_text(h: &mut Harness, text: &str) {
+        for c in text.chars() {
+            ch(h, c);
+        }
+    }
+
+    fn registry_names(h: &Harness) -> Vec<String> {
+        h.services
+            .repo
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect()
+    }
+
+    // --- startup ---
+
+    #[test]
+    fn starts_with_the_registered_themes_and_the_first_selected() {
+        let h = harness(two_themes());
+        assert_eq!(h.app.themes.len(), 2);
+        assert_eq!(h.app.selected, 0);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(h.app.selected_theme().unwrap().name, "Nordzy");
+    }
+
+    #[test]
+    fn the_active_theme_is_matched_case_insensitively() {
+        let h = harness_with(
+            FakeRepository::with(two_themes()),
+            &[false],
+            Some("bibata"),
+            FakePreviewLoader::returning(one_frame()),
+        );
+        assert!(!h.app.is_active(&h.app.themes[0]));
+        assert!(h.app.is_active(&h.app.themes[1]));
+    }
+
+    #[test]
+    fn an_unreadable_registry_is_reported_in_the_status() {
+        let h = harness_with(
+            FakeRepository::failing(),
+            &[false],
+            None,
+            FakePreviewLoader::returning(one_frame()),
+        );
+        assert!(h.app.themes.is_empty());
+        assert!(h.app.status.contains("boom"), "{}", h.app.status);
+    }
+
+    // --- navigation ---
+
+    #[test]
+    fn down_and_up_move_the_selection() {
+        let mut h = harness(two_themes());
+        press(&mut h, KeyCode::Down);
+        assert_eq!(h.app.selected, 1);
+        press(&mut h, KeyCode::Up);
+        assert_eq!(h.app.selected, 0);
+    }
+
+    #[test]
+    fn j_and_k_move_the_selection() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'j');
+        assert_eq!(h.app.selected, 1);
+        ch(&mut h, 'k');
+        assert_eq!(h.app.selected, 0);
+    }
+
+    #[test]
+    fn the_selection_clamps_at_both_ends() {
+        let mut h = harness(two_themes());
+        press(&mut h, KeyCode::Up);
+        assert_eq!(h.app.selected, 0);
+        ch(&mut h, 'j');
+        ch(&mut h, 'j');
+        ch(&mut h, 'j');
+        assert_eq!(h.app.selected, 1);
+    }
+
+    #[test]
+    fn navigation_keys_are_safe_on_an_empty_list() {
+        let mut h = harness(vec![]);
+        for code in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+            KeyCode::Char('d'),
+        ] {
+            assert_eq!(press(&mut h, code), Outcome::Continue);
+        }
+        assert_eq!(h.app.selected, 0);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(h.app.selected_theme().is_none());
+    }
+
+    // --- preview loading ---
+
+    #[test]
+    fn only_the_selected_theme_is_loaded_at_startup() {
+        let h = harness(two_themes());
+        assert_eq!(*h.loads.borrow(), [PathBuf::from("/icons/Nordzy")]);
+    }
+
+    #[test]
+    fn moving_loads_the_new_theme_once() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'j');
+        ch(&mut h, 'k');
+        ch(&mut h, 'j');
+        assert_eq!(
+            *h.loads.borrow(),
+            [
+                PathBuf::from("/icons/Nordzy"),
+                PathBuf::from("/icons/Bibata")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_preview_keeps_navigation_and_apply_working() {
+        let mut h = harness_with(
+            FakeRepository::with(two_themes()),
+            &[false],
+            None,
+            FakePreviewLoader::failing("no cursor file"),
+        );
+        assert!(matches!(
+            h.app.selected_preview(),
+            Some(PreviewEntry::Failed(m)) if m.contains("no cursor file")
+        ));
+        ch(&mut h, 'j');
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(*h.calls.borrow(), ["alpha:Bibata"]);
+    }
+
+    #[test]
+    fn preparing_encodes_the_selected_preview() {
+        let mut h = harness(two_themes());
+        assert!(h.app.current_protocol().is_none());
+        h.app.prepare_preview(Size::new(10, 5));
+        assert!(h.app.current_protocol().is_some());
+    }
+
+    #[test]
+    fn ticking_without_a_selection_does_not_redraw() {
+        let mut h = harness(vec![]);
+        h.app.prepare_preview(Size::new(10, 5));
+        assert!(!h.app.tick(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn ticking_a_static_preview_does_not_redraw() {
+        let mut h = harness(two_themes());
+        assert!(!h.app.tick(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn ticking_an_animated_preview_requests_a_redraw() {
+        let frames = (0..2)
+            .map(|_| PreviewFrame {
+                width: 2,
+                height: 2,
+                rgba: vec![255; 16],
+                delay_ms: 100,
+            })
+            .collect();
+        let mut h = harness_with(
+            FakeRepository::with(two_themes()),
+            &[false],
+            None,
+            FakePreviewLoader::returning(Preview { frames }),
+        );
+        assert!(!h.app.tick(Duration::from_millis(50)));
+        assert!(h.app.tick(Duration::from_millis(60)));
+    }
+
+    // --- apply ---
+
+    #[test]
+    fn enter_applies_the_selected_theme_and_stays_open() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'j');
+        assert_eq!(press(&mut h, KeyCode::Enter), Outcome::Continue);
+        assert_eq!(*h.calls.borrow(), ["alpha:Bibata"]);
+    }
+
+    #[test]
+    fn a_full_apply_refreshes_the_active_marker_and_status() {
+        let mut h = harness_with(
+            FakeRepository::with(two_themes()),
+            &[false, false],
+            None,
+            FakePreviewLoader::returning(one_frame()),
+        );
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.active.as_deref(), Some("Nordzy"));
+        assert!(h.app.status.contains("Nordzy"), "{}", h.app.status);
+        assert!(h.app.status.contains("2 of 2"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn a_partial_apply_lists_the_failed_steps_and_keeps_the_marker() {
+        let mut h = harness_with(
+            FakeRepository::with(two_themes()),
+            &[true, false, true],
+            Some("Bibata"),
+            FakePreviewLoader::returning(one_frame()),
+        );
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.active.as_deref(), Some("Bibata"));
+        assert!(h.app.status.contains("1 of 3"), "{}", h.app.status);
+        assert!(h.app.status.contains("alpha"), "{}", h.app.status);
+        assert!(h.app.status.contains("gamma"), "{}", h.app.status);
+        assert!(!h.app.status.contains("beta"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn a_repository_error_during_apply_surfaces_in_the_status() {
+        let mut h = harness(two_themes());
+        h.services.repo = Box::new(FakeRepository::failing());
+        press(&mut h, KeyCode::Enter);
+        assert!(h.app.status.contains("boom"), "{}", h.app.status);
+        assert!(h.calls.borrow().is_empty());
+    }
+
+    // --- add flow ---
+
+    #[test]
+    fn a_opens_the_path_prompt() {
+        let mut h = harness(vec![]);
+        ch(&mut h, 'a');
+        assert_eq!(h.app.mode, Mode::PathInput);
+    }
+
+    #[test]
+    fn typing_in_a_prompt_never_triggers_commands() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'a');
+        assert_eq!(type_and_outcome(&mut h, "qjdk"), Outcome::Continue);
+        assert_eq!(h.app.input, "qjdk");
+        assert_eq!(h.app.selected, 0);
+    }
+
+    fn type_and_outcome(h: &mut Harness, text: &str) -> Outcome {
+        let mut last = Outcome::Continue;
+        for c in text.chars() {
+            last = ch(h, c);
+        }
+        last
+    }
+
+    #[test]
+    fn backspace_edits_the_input() {
+        let mut h = harness(vec![]);
+        ch(&mut h, 'a');
+        type_text(&mut h, "/ab");
+        press(&mut h, KeyCode::Backspace);
+        assert_eq!(h.app.input, "/a");
+    }
+
+    #[test]
+    fn the_add_flow_registers_a_theme_with_alias_and_selects_it() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'a');
+        type_text(&mut h, "/themes/Dir");
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::AliasInput);
+        assert!(h.app.input.is_empty());
+        type_text(&mut h, "dr");
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(registry_names(&h), ["Nordzy", "Bibata", "Dir"]);
+        assert_eq!(h.app.themes.len(), 3);
+        assert_eq!(h.app.selected_theme().unwrap().name, "Dir");
+        assert_eq!(
+            h.app
+                .selected_theme()
+                .unwrap()
+                .alias
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "dr"
+        );
+        assert!(h.app.status.contains("Dir"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn an_empty_alias_registers_without_one() {
+        let mut h = harness(vec![]);
+        ch(&mut h, 'a');
+        type_text(&mut h, "/themes/Dir");
+        press(&mut h, KeyCode::Enter);
+        press(&mut h, KeyCode::Enter);
+        assert!(h.app.themes[0].alias.is_none());
+    }
+
+    #[test]
+    fn an_empty_path_cancels_the_prompt() {
+        let mut h = harness(vec![]);
+        ch(&mut h, 'a');
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(registry_names(&h).is_empty());
+    }
+
+    #[test]
+    fn an_invalid_theme_directory_is_reported_in_the_status() {
+        let mut h = harness(vec![]);
+        h.services.inspector = Box::new(FakeInspector {
+            valid: false,
+            name: None,
+        });
+        ch(&mut h, 'a');
+        type_text(&mut h, "/nope");
+        press(&mut h, KeyCode::Enter);
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(
+            h.app.status.contains("not a valid cursor theme directory"),
+            "{}",
+            h.app.status
+        );
+        assert!(registry_names(&h).is_empty());
+    }
+
+    #[test]
+    fn a_rejected_alias_is_reported_in_the_status() {
+        let mut h = harness(vec![]);
+        ch(&mut h, 'a');
+        type_text(&mut h, "/themes/Dir");
+        press(&mut h, KeyCode::Enter);
+        type_text(&mut h, "list");
+        press(&mut h, KeyCode::Enter);
+        assert!(h.app.status.contains("reserved"), "{}", h.app.status);
+        assert!(registry_names(&h).is_empty());
+    }
+
+    #[test]
+    fn escape_cancels_the_path_prompt_without_quitting() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'a');
+        type_text(&mut h, "/x");
+        assert_eq!(press(&mut h, KeyCode::Esc), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(h.app.input.is_empty());
+    }
+
+    #[test]
+    fn escape_cancels_the_alias_prompt_and_adds_nothing() {
+        let mut h = harness(vec![]);
+        ch(&mut h, 'a');
+        type_text(&mut h, "/themes/Dir");
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(press(&mut h, KeyCode::Esc), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(registry_names(&h).is_empty());
+    }
+
+    // --- remove flow ---
+
+    #[test]
+    fn d_asks_for_confirmation() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'd');
+        assert_eq!(h.app.mode, Mode::ConfirmRemove);
+        assert_eq!(registry_names(&h).len(), 2);
+    }
+
+    #[test]
+    fn y_confirms_the_removal_and_clamps_the_selection() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'j');
+        ch(&mut h, 'd');
+        ch(&mut h, 'y');
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(registry_names(&h), ["Nordzy"]);
+        assert_eq!(h.app.selected, 0);
+        assert!(h.app.status.contains("Bibata"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn removing_the_last_theme_leaves_an_empty_safe_state() {
+        let mut h = harness(vec![theme("Only", None)]);
+        ch(&mut h, 'd');
+        ch(&mut h, 'y');
+        assert!(h.app.themes.is_empty());
+        assert!(h.app.selected_theme().is_none());
+    }
+
+    #[test]
+    fn any_other_key_cancels_the_removal() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'd');
+        ch(&mut h, 'n');
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(registry_names(&h).len(), 2);
+    }
+
+    #[test]
+    fn escape_cancels_the_removal_without_quitting() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'd');
+        assert_eq!(press(&mut h, KeyCode::Esc), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(registry_names(&h).len(), 2);
+    }
+
+    #[test]
+    fn a_failing_removal_is_reported_in_the_status() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'd');
+        h.services.repo = Box::new(FakeRepository::failing());
+        ch(&mut h, 'y');
+        assert!(h.app.status.contains("boom"), "{}", h.app.status);
+        assert_eq!(h.app.mode, Mode::Browse);
+    }
+
+    // --- quitting ---
+
+    #[test]
+    fn q_quits_in_browse_mode() {
+        let mut h = harness(two_themes());
+        assert_eq!(ch(&mut h, 'q'), Outcome::Quit);
+    }
+
+    #[test]
+    fn escape_quits_in_browse_mode() {
+        let mut h = harness(two_themes());
+        assert_eq!(press(&mut h, KeyCode::Esc), Outcome::Quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_every_mode() {
+        for setup in ["", "a", "ad", "d"] {
+            let mut h = harness(two_themes());
+            for c in setup.chars() {
+                ch(&mut h, c);
+            }
+            let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+            assert_eq!(
+                h.app.handle_key(key, &mut h.services),
+                Outcome::Quit,
+                "after {setup:?}"
+            );
+        }
+    }
+}
