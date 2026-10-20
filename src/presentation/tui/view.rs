@@ -46,6 +46,11 @@ pub fn preview_size(area: Rect) -> Size {
     half(Block::bordered().inner(areas(area).preview).as_size())
 }
 
+/// Whether a terminal cell is inside the list pane (borders included).
+pub fn over_list(area: Rect, column: u16, row: u16) -> bool {
+    areas(area).list.contains(Position::new(column, row))
+}
+
 /// The theme list row under a terminal cell, `None` outside the rows. Mirrors
 /// `render_list`: a bordered block, one-line items and a fresh `ListState`, so
 /// the offset only scrolls far enough to keep the selection on the last row.
