@@ -91,6 +91,10 @@ fn event_loop(
                     }
                     redraw = true;
                 }
+                Event::Mouse(mouse) => {
+                    let area = Rect::from(session.terminal.size()?);
+                    redraw |= app.handle_mouse(mouse, area, services);
+                }
                 Event::Resize(..) => redraw = true,
                 _ => {}
             }
