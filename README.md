@@ -352,4 +352,18 @@ cargo fmt --check
 
 Tests never touch your real home directory, your real cursor themes, `hyprctl`, `gsettings`, `yay` or `pacman`: they use temporary directories and fakes. The interactive TUI needs a real terminal, so its event loop is not covered by automated tests.
 
+### Releasing
+
+Versions follow [Semantic Versioning 2.0.0](https://semver.org). Release tags are `v` plus the `Cargo.toml` version, without build metadata (`+...`). A tag with a hyphen, such as `v0.3.0-rc.1`, is a pre-release and never becomes GitHub's "Latest".
+
+1. Run the "Prepare release" workflow with the new version (for example `0.2.0`), or bump `Cargo.toml` and `Cargo.lock` by hand in a pull request.
+2. Merge that pull request into `main`.
+3. From `main`, tag and push:
+
+   ```sh
+   git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z
+   ```
+
+4. The Release workflow validates the tag, runs the tests, builds the binary and publishes it with its checksum. A stable tag must point to a commit already on `main`; pre-release tags may come from any branch.
+
 Contributions are welcome. Please keep the layering, add tests with your change, and use conventional commit messages.
