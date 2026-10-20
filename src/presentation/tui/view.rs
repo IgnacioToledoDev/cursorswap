@@ -7,7 +7,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_image::Image;
 
-use super::app::{App, Mode};
+use super::app::{App, Mode, UpdateOffer};
 use super::preview::PreviewEntry;
 
 const EMPTY_STATE: &str =
@@ -65,8 +65,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         Paragraph::new(help).style(Style::new().add_modifier(Modifier::DIM)),
         areas.help,
     );
-    if let (Mode::UpdatePrompt, Some(latest)) = (app.mode, &app.update_offer) {
-        render_update_modal(frame, latest, &app.installed);
+    if let (Mode::UpdatePrompt, Some(offer)) = (app.mode, &app.update_offer) {
+        render_update_modal(frame, offer, &app.installed);
     }
     if let (Mode::ConfirmInstall, Some(package)) = (app.mode, app.results.get(app.result_selected))
     {
@@ -91,21 +91,84 @@ fn render_install_modal(frame: &mut Frame, package: &str) {
     frame.render_widget(modal, popup);
 }
 
-fn render_update_modal(frame: &mut Frame, latest: &str, installed: &str) {
+const UPDATE_KEYS: &str = "[y] update   [n] not now   [s] skip this version";
+/// The modal is at most this tall, borders included.
+const UPDATE_MODAL_ROWS: u16 = 10;
+const UPDATE_MODAL_WIDTH: u16 = 76;
+const UPDATE_SUMMARY_LINES: usize = 4;
+
+fn render_update_modal(frame: &mut Frame, offer: &UpdateOffer, installed: &str) {
     let area = frame.area();
-    let size = Size::new(60.min(area.width), 7.min(area.height));
-    let popup = centered(area, size);
-    let text = format!(
-        "cursorswap {latest} is available (you have {installed}).\n\n\
-         Install it now and restart?\n\n\
-         [y] update   [n] not now   [s] skip this version"
+    let width = UPDATE_MODAL_WIDTH.min(area.width);
+    let inner = usize::from(width.saturating_sub(2)).max(1);
+    let header = format!(
+        "cursorswap {} is available (you have {installed}).",
+        offer.version
     );
-    let modal = Paragraph::new(text)
-        .alignment(Alignment::Center)
+    let lines = update_modal_lines(offer, header, inner);
+    let rows: usize = lines.iter().map(|l| wrapped_rows(l.width(), inner)).sum();
+    let height = u16::try_from(rows + 2)
+        .unwrap_or(UPDATE_MODAL_ROWS)
+        .min(UPDATE_MODAL_ROWS)
+        .min(area.height);
+    let popup = centered(area, Size::new(width, height));
+    let modal = Paragraph::new(lines)
         .wrap(Wrap { trim: true })
         .block(Block::bordered().title(" Update available "));
     frame.render_widget(Clear, popup);
     frame.render_widget(modal, popup);
+}
+
+/// Header, a short summary of the notes, the link and the keys. Without notes
+/// the plain question and the link are shown instead.
+fn update_modal_lines(offer: &UpdateOffer, header: String, inner: usize) -> Vec<Line<'static>> {
+    let link = &offer.details.link;
+    let keys = Line::from(UPDATE_KEYS).alignment(Alignment::Center);
+    let Some(notes) = &offer.details.notes else {
+        return vec![
+            Line::from(header).alignment(Alignment::Center),
+            Line::from(""),
+            Line::from("Install it now and restart?").alignment(Alignment::Center),
+            Line::from(""),
+            Line::from(format!("Changelog: {link}")),
+            Line::from(""),
+            keys,
+        ];
+    };
+    // Header, blank line and keys always take a row; the link takes one or more.
+    let room = |link_line: &str| {
+        let fixed = 3 + wrapped_rows(link_line.chars().count(), inner);
+        usize::from(UPDATE_MODAL_ROWS)
+            .saturating_sub(2 + fixed)
+            .min(UPDATE_SUMMARY_LINES)
+    };
+    let changelog = format!("Changelog: {link}");
+    let (mut summary, mut more) = notes.summary(room(&changelog));
+    let mut link_line = changelog;
+    if more {
+        link_line = format!("... full notes: {link}");
+        (summary, more) = notes.summary(room(&link_line));
+        debug_assert!(more);
+    }
+    let mut lines = vec![Line::from(header).alignment(Alignment::Center)];
+    lines.extend(summary.into_iter().map(|l| Line::from(fit(l, inner))));
+    lines.extend([Line::from(link_line), Line::from(""), keys]);
+    lines
+}
+
+/// Rows a line of `columns` columns takes once wrapped to `width`.
+fn wrapped_rows(columns: usize, width: usize) -> usize {
+    columns.div_ceil(width).max(1)
+}
+
+/// Trims `text` to `width` columns, ending with an ellipsis when cut.
+fn fit(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
+    cut.push('\u{2026}');
+    cut
 }
 
 fn status_text(app: &App) -> String {
@@ -229,6 +292,9 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui_image::picker::Picker;
 
+    use crate::application::update::UpdateStatus;
+    use crate::domain::update::{ReleaseDetails, ReleaseNotes};
+
     use crate::application::fakes::{
         FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, theme,
     };
@@ -327,6 +393,104 @@ mod tests {
             "[s] skip this version",
         ] {
             assert!(text.contains(needle), "missing {needle:?} in\n{text}");
+        }
+    }
+
+    const COMPARE: &str = "https://github.com/IgnacioToledoDev/cursorswap/compare/v0.1.0...v0.3.0";
+
+    fn offered_with(details: ReleaseDetails) -> (App, Services) {
+        let (mut app, services) =
+            app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
+        app.installed = "0.1.0".into();
+        app.on_update_status(UpdateStatus::Available {
+            latest: "0.3.0".into(),
+            details,
+        });
+        (app, services)
+    }
+
+    fn details(raw: &str, link: &str) -> ReleaseDetails {
+        ReleaseDetails {
+            notes: Some(ReleaseNotes::sanitize(raw)),
+            link: link.into(),
+        }
+    }
+
+    fn many(n: usize) -> String {
+        (1..=n).map(|i| format!("* change number {i}\n")).collect()
+    }
+
+    /// Rows from the modal's title to its bottom border.
+    fn modal_height(lines: &[String]) -> usize {
+        let top = lines
+            .iter()
+            .position(|l| l.contains("Update available"))
+            .unwrap();
+        let keys = lines.iter().position(|l| l.contains("[s] skip")).unwrap();
+        keys + 2 - top
+    }
+
+    #[test]
+    fn the_modal_shows_a_short_summary_and_the_link() {
+        let (mut app, _s) = offered_with(details(
+            "## What's Changed\n* feat: faster swaps\n* fix: crash",
+            COMPARE,
+        ));
+        let lines = draw(&mut app, 80, 24);
+        let text = screen(&lines);
+        for needle in ["feat: faster swaps", "fix: crash", COMPARE, "[y] update"] {
+            assert!(text.contains(needle), "missing {needle:?} in\n{text}");
+        }
+        assert!(!text.contains("full notes"), "{text}");
+        assert!(modal_height(&lines) <= 10, "{text}");
+    }
+
+    #[test]
+    fn long_notes_are_cut_with_a_pointer_to_the_full_notes() {
+        let (mut app, _s) = offered_with(details(&many(30), COMPARE));
+        let lines = draw(&mut app, 80, 24);
+        let text = screen(&lines);
+        assert!(text.contains("change number 1"), "{text}");
+        assert!(!text.contains("change number 9"), "{text}");
+        assert!(text.contains("... full notes:"), "{text}");
+        assert!(text.contains("compare/v0.1.0...v0.3.0"), "{text}");
+        assert!(text.contains("[s] skip this version"), "{text}");
+        assert!(modal_height(&lines) <= 10, "{text}");
+    }
+
+    #[test]
+    fn overlong_note_lines_are_trimmed_to_the_modal_width() {
+        let long = format!("* {}", "word ".repeat(60));
+        let (mut app, _s) = offered_with(details(&long, COMPARE));
+        let lines = draw(&mut app, 80, 24);
+        assert!(screen(&lines).contains('\u{2026}'));
+        assert!(modal_height(&lines) <= 10);
+    }
+
+    #[test]
+    fn a_missing_summary_still_shows_the_link() {
+        let (mut app, _s) = offered_with(ReleaseDetails {
+            notes: None,
+            link: COMPARE.into(),
+        });
+        let text = screen(&draw(&mut app, 80, 24));
+        assert!(text.contains(COMPARE), "{text}");
+        assert!(text.contains("[y] update"), "{text}");
+    }
+
+    #[test]
+    fn the_modal_never_panics_on_small_terminals() {
+        for (w, h) in [
+            (80, 24),
+            (80, 10),
+            (40, 12),
+            (20, 5),
+            (10, 3),
+            (3, 3),
+            (1, 1),
+        ] {
+            let (mut app, _s) = offered_with(details(&many(30), COMPARE));
+            draw(&mut app, w, h);
         }
     }
 
