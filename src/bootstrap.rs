@@ -164,15 +164,19 @@ pub fn build_update_services(
     }
 }
 
-/// Parses the command line, wires the real adapters and runs the command.
 /// Reader handed to the update prompts. It must not hold the stdin lock between
 /// calls: `TerminalConfirm` takes the same lock later in the same run.
+///
+/// The private buffer is harmless here: the prompts only run on a terminal,
+/// which delivers one line per read, and `TerminalConfirm` refuses any stdin
+/// that is not a terminal.
 fn stdin_reader() -> impl BufRead {
     // `Stdin` locks per read call and releases the lock right after, unlike
     // the guard from `Stdin::lock`, which would be held for the whole run.
     io::BufReader::new(io::stdin())
 }
 
+/// Parses the command line, wires the real adapters and runs the command.
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
     env: impl Fn(&str) -> Option<OsString>,
