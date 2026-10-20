@@ -17,7 +17,7 @@ cursorswap                  # browse themes with a live preview
 - **Switch by name or alias.** `cursorswap Nordzy-cursors` or `cursorswap N`.
 - **Terminal UI with preview.** Browse your themes and see the cursor, animated when the theme is animated.
 - **Bring your own themes.** Register any cursor theme directory you already have; nothing is copied or moved.
-- **Find and install from the AUR.** `cursorswap search` and `cursorswap install` use `yay`, with a confirmation first and yay's own PKGBUILD review.
+- **Find and install from the AUR.** `cursorswap search` and `cursorswap install` use `yay`, with a confirmation first and yay's own PKGBUILD review. The terminal UI can do the same without leaving it.
 - **Applies everywhere.** Hyprland env, GTK 3, gsettings and the live session, in one step.
 - **Fail-safe.** If one step fails, the others still run and you get a per-step report and a distinct exit code.
 - **Safe file edits.** Only the cursor lines are changed. Writes are atomic, and config files that are symlinks (for example, managed dotfiles) are written through the link so the link is preserved.
@@ -209,12 +209,28 @@ Run `cursorswap` with no arguments.
 | `[` / `]` | Show the previous / next cursor state in the preview |
 | `Enter` | Apply the selected theme (the UI stays open and shows the result of each step) |
 | `a` | Add a theme: type its path, then an optional alias |
+| `/` | Search the AUR: type a term, then `Enter` (see [Search and install from the UI](#search-and-install-from-the-ui)) |
 | `d` | Remove the selected theme (`y` to confirm) |
 | `q`, `Esc`, `Ctrl-C` | Quit (`Esc` first cancels a prompt or confirmation) |
 
 The left pane lists your themes with the active one marked. The right pane previews the selected theme and animates it if it is an animated cursor. If a preview cannot be loaded, the UI shows `no preview` and keeps working.
 
 The preview shows one cursor state at a time, named in the top-right of the preview pane. `[` and `]` cycle through the states: `default`, `pointer` (the link hand), `text`, `wait`, `progress`, `not-allowed`, `help`, `grabbing`, then `crosshair`, `move`, `nwse-resize` and `ew-resize`. `pointer` is the closest match for "hover over something clickable" and `grabbing` for "pressed". The chosen state stays selected when you move to another theme. If a theme has no cursor for a state, the pane says `no preview for <state>` and you can keep browsing. Each state is read the first time you select it.
+
+#### Search and install from the UI
+
+Press `/`, type a search term and press `Enter`. The left pane then lists the matching packages (the same cursor-theme filter as `cursorswap search`) with their name, version and description; packages you already have are marked `[installed]`.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` or arrow keys | Move through the results |
+| `Enter` | Ask to install the highlighted package (`y` to confirm, any other key cancels) |
+| `/` | Start a new search |
+| `Esc` | Close the results |
+
+After you confirm, the UI steps aside: `yay` runs in your terminal, shows the PKGBUILD for review and asks for your sudo password, exactly like `cursorswap install`. When it finishes, press `Enter` to return. The new theme is registered, selected in the list and ready to preview. The terminal is restored even if `yay` fails.
+
+Problems never close the UI. A missing `yay`, a search without results, an unreachable package index or a failed install show a message in the status line and leave you where you were.
 
 Note: the path prompt does not expand `~`; type the full path, or use the command line `add`, where your shell expands it.
 

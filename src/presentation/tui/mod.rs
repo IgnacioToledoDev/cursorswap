@@ -9,7 +9,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind};
-use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
 use thiserror::Error;
 
@@ -40,12 +39,7 @@ pub fn run(services: &mut Services) -> Result<Finish, TuiError> {
     let updates = spawn_update_check(services);
     let mut session = TerminalSession::start()?;
     let mut app = App::new(session.picker.clone(), services);
-    Ok(event_loop(
-        &mut session.terminal,
-        &mut app,
-        services,
-        &updates,
-    )?)
+    Ok(event_loop(&mut session, &mut app, services, &updates)?)
 }
 
 /// Runs the update check on its own thread; any failure is a silent no-result.
@@ -60,8 +54,16 @@ fn spawn_update_check(services: &Services) -> Receiver<UpdateStatus> {
     rx
 }
 
+/// Runs the install while the terminal belongs to yay, then waits for Enter so
+/// its output can be read before the TUI covers the screen again.
+fn install_on_terminal(app: &mut App, package: &str, services: &mut Services) {
+    app.install_package(package, services);
+    println!("\n{}\nPress Enter to return to cursorswap...", app.status);
+    let _ = io::stdin().read_line(&mut String::new());
+}
+
 fn event_loop(
-    terminal: &mut DefaultTerminal,
+    session: &mut TerminalSession,
     app: &mut App,
     services: &mut Services,
     updates: &Receiver<UpdateStatus>,
@@ -70,6 +72,7 @@ fn event_loop(
     let mut redraw = true;
     loop {
         if redraw {
+            let terminal = &mut session.terminal;
             app.prepare_preview(view::preview_size(Rect::from(terminal.size()?)));
             terminal.draw(|frame| view::render(frame, app))?;
             redraw = false;
@@ -81,6 +84,10 @@ fn event_loop(
                         Outcome::Continue => {}
                         Outcome::Quit => return Ok(Finish::Quit),
                         Outcome::Update(version) => return Ok(Finish::Update(version)),
+                        Outcome::Install(package) => {
+                            // yay prompts for the PKGBUILD review and sudo itself.
+                            session.suspend(|| install_on_terminal(app, &package, services))?;
+                        }
                     }
                     redraw = true;
                 }
