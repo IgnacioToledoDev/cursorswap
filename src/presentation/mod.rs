@@ -1,5 +1,6 @@
 use crate::domain::ports::{
-    CurrentCursorProvider, CursorApplier, CursorRepository, PreviewLoader, ThemeInspector,
+    Confirm, CurrentCursorProvider, CursorApplier, CursorRepository, PackageManager, PackageSearch,
+    PreviewLoader, ThemeInspector,
 };
 
 pub mod cli;
@@ -14,4 +15,7 @@ pub struct Services {
     pub current: Box<dyn CurrentCursorProvider>,
     pub preview: Box<dyn PreviewLoader>,
     pub appliers: Vec<Box<dyn CursorApplier>>,
+    pub searcher: Box<dyn PackageSearch>,
+    pub packages: Box<dyn PackageManager>,
+    pub confirm: Box<dyn Confirm>,
 }

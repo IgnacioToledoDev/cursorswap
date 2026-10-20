@@ -6,12 +6,17 @@ use crate::domain::error::ApplyError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
     pub success: bool,
+    pub stdout: String,
     pub stderr: String,
 }
 
 /// Runs an external program. Implementations must never go through a shell.
 pub trait CommandRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput, io::Error>;
+
+    /// Runs the program attached to the user's terminal (inherited stdio) and
+    /// reports whether it exited successfully.
+    fn run_interactive(&self, program: &str, args: &[&str]) -> Result<bool, io::Error>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -22,8 +27,14 @@ impl CommandRunner for SystemCommandRunner {
         let output = Command::new(program).args(args).output()?;
         Ok(CommandOutput {
             success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         })
+    }
+
+    fn run_interactive(&self, program: &str, args: &[&str]) -> Result<bool, io::Error> {
+        // `status` inherits stdin, stdout and stderr from this process.
+        Ok(Command::new(program).args(args).status()?.success())
     }
 }
 
@@ -66,15 +77,26 @@ pub mod fake {
     #[derive(Clone)]
     pub struct FakeRunner {
         pub calls: Rc<RefCell<Vec<Vec<String>>>>,
+        /// Calls made through `run_interactive`.
+        pub interactive_calls: Rc<RefCell<Vec<Vec<String>>>>,
         behavior: Behavior,
+        stdout: String,
     }
 
     impl FakeRunner {
         pub fn new(behavior: Behavior) -> Self {
             Self {
                 calls: Rc::new(RefCell::new(Vec::new())),
+                interactive_calls: Rc::new(RefCell::new(Vec::new())),
                 behavior,
+                stdout: String::new(),
             }
+        }
+
+        /// Sets the captured stdout returned by every `run` call.
+        pub fn with_stdout(mut self, stdout: &str) -> Self {
+            self.stdout = stdout.to_string();
+            self
         }
 
         pub fn ok() -> Self {
@@ -90,12 +112,27 @@ pub mod fake {
             match &self.behavior {
                 Behavior::Succeed => Ok(CommandOutput {
                     success: true,
+                    stdout: self.stdout.clone(),
                     stderr: String::new(),
                 }),
                 Behavior::ExitNonZero(stderr) => Ok(CommandOutput {
                     success: false,
+                    stdout: self.stdout.clone(),
                     stderr: stderr.clone(),
                 }),
+                Behavior::SpawnError => {
+                    Err(io::Error::new(io::ErrorKind::NotFound, "no such program"))
+                }
+            }
+        }
+
+        fn run_interactive(&self, program: &str, args: &[&str]) -> Result<bool, io::Error> {
+            let mut call = vec![program.to_string()];
+            call.extend(args.iter().map(|a| a.to_string()));
+            self.interactive_calls.borrow_mut().push(call);
+            match &self.behavior {
+                Behavior::Succeed => Ok(true),
+                Behavior::ExitNonZero(_) => Ok(false),
                 Behavior::SpawnError => {
                     Err(io::Error::new(io::ErrorKind::NotFound, "no such program"))
                 }
@@ -136,6 +173,27 @@ mod tests {
         assert!(
             SystemCommandRunner
                 .run("cursorswap-no-such-binary", &[])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn system_runner_captures_stdout() {
+        let out = SystemCommandRunner.run("echo", &["hello"]).unwrap();
+        assert_eq!(out.stdout, "hello\n");
+    }
+
+    #[test]
+    fn system_runner_interactive_reports_exit_status() {
+        assert!(SystemCommandRunner.run_interactive("true", &[]).unwrap());
+        assert!(!SystemCommandRunner.run_interactive("false", &[]).unwrap());
+    }
+
+    #[test]
+    fn system_runner_interactive_spawn_error_is_io_error() {
+        assert!(
+            SystemCommandRunner
+                .run_interactive("cursorswap-no-such-binary", &[])
                 .is_err()
         );
     }

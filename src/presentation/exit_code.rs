@@ -50,7 +50,7 @@ impl Exit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::error::RepositoryError;
+    use crate::domain::error::{ConfirmError, PackageError, RepositoryError};
     use std::path::PathBuf;
 
     #[test]
@@ -80,6 +80,16 @@ mod tests {
             ApplicationError::Domain(DomainError::InvalidName),
             ApplicationError::Repository(RepositoryError::Storage("x".into())),
             ApplicationError::InvalidThemeDir(PathBuf::from("/x")),
+            ApplicationError::Package(PackageError::Command("x".into())),
+            ApplicationError::Confirm(ConfirmError::NotInteractive),
+            ApplicationError::Declined,
+            ApplicationError::NoThemeInPackage("p".into()),
+            ApplicationError::AliasNeedsSingleTheme {
+                package: "p".into(),
+                count: 2,
+                paths: "/a, /b".into(),
+            },
+            ApplicationError::Domain(DomainError::InvalidPackageName("-S".into())),
         ];
         for err in &errors {
             assert_eq!(Exit::from_error(err), Exit::Error, "{err}");
@@ -100,7 +110,12 @@ mod tests {
 
     #[test]
     fn usage_errors_are_generic_errors_not_2() {
-        for args in [["cursorswap", "--bogus"], ["cursorswap", "add"]] {
+        for args in [
+            ["cursorswap", "--bogus"],
+            ["cursorswap", "add"],
+            ["cursorswap", "search"],
+            ["cursorswap", "install"],
+        ] {
             assert_eq!(Exit::from_clap(&clap_error(&args)), Exit::Error);
         }
     }
