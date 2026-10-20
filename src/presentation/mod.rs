@@ -7,6 +7,7 @@ pub mod cli;
 pub mod exit_code;
 pub mod output;
 pub mod tui;
+pub mod update;
 
 /// Everything the presentation layer needs, injected by the composition root.
 pub struct Services {
@@ -18,4 +19,5 @@ pub struct Services {
     pub searcher: Box<dyn PackageSearch>,
     pub packages: Box<dyn PackageManager>,
     pub confirm: Box<dyn Confirm>,
+    pub update: update::UpdateServices,
 }

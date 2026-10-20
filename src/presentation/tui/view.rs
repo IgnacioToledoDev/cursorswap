@@ -3,7 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect, Size};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_image::Image;
 
 use super::app::{App, Mode};
@@ -12,6 +12,7 @@ use super::preview::PreviewEntry;
 const EMPTY_STATE: &str = "No cursor themes registered.\nPress a to add one.";
 const BROWSE_HELP: &str = "j/k move  Enter apply  a add  d remove  q quit";
 const PROMPT_HELP: &str = "Enter confirm  Esc cancel";
+const UPDATE_HELP: &str = "y update  n not now  s skip this version";
 
 struct Areas {
     list: Rect,
@@ -51,15 +52,35 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_list(frame, app, areas.list);
     render_preview(frame, app, areas.preview);
     frame.render_widget(Paragraph::new(status_text(app)), areas.status);
-    let help = if app.mode == Mode::Browse {
-        BROWSE_HELP
-    } else {
-        PROMPT_HELP
+    let help = match app.mode {
+        Mode::Browse => BROWSE_HELP,
+        Mode::UpdatePrompt => UPDATE_HELP,
+        _ => PROMPT_HELP,
     };
     frame.render_widget(
         Paragraph::new(help).style(Style::new().add_modifier(Modifier::DIM)),
         areas.help,
     );
+    if let (Mode::UpdatePrompt, Some(latest)) = (app.mode, &app.update_offer) {
+        render_update_modal(frame, latest, &app.installed);
+    }
+}
+
+fn render_update_modal(frame: &mut Frame, latest: &str, installed: &str) {
+    let area = frame.area();
+    let size = Size::new(60.min(area.width), 7.min(area.height));
+    let popup = centered(area, size);
+    let text = format!(
+        "cursorswap {latest} is available (you have {installed}).\n\n\
+         Install it now and restart?\n\n\
+         [y] update   [n] not now   [s] skip this version"
+    );
+    let modal = Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .block(Block::bordered().title(" Update available "));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(modal, popup);
 }
 
 fn status_text(app: &App) -> String {
@@ -67,6 +88,7 @@ fn status_text(app: &App) -> String {
         Mode::Browse => app.status.clone(),
         Mode::PathInput => format!("Theme directory: {}_", app.input),
         Mode::AliasInput => format!("Alias (optional, empty for none): {}_", app.input),
+        Mode::UpdatePrompt => app.status.clone(),
         Mode::ConfirmRemove => match app.selected_theme() {
             Some(theme) => format!("Remove {}? y confirms, any other key cancels", theme.name),
             None => String::new(),
@@ -185,6 +207,7 @@ mod tests {
             searcher,
             packages,
             confirm,
+            update: crate::presentation::update::fixture::disabled(),
         }
     }
 
@@ -219,6 +242,48 @@ mod tests {
 
     fn screen(lines: &[String]) -> String {
         lines.join("\n")
+    }
+
+    fn offered_app() -> (App, Services) {
+        let (mut app, services) =
+            app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
+        app.installed = "0.1.0".into();
+        app.on_update_status(crate::application::update::UpdateStatus::Available {
+            latest: "0.2.0".into(),
+        });
+        (app, services)
+    }
+
+    #[test]
+    fn the_update_modal_names_both_versions_and_the_choices() {
+        let (mut app, _s) = offered_app();
+        let text = screen(&draw(&mut app, 100, 24));
+        for needle in [
+            "Update available",
+            "0.2.0",
+            "0.1.0",
+            "[y] update",
+            "[n] not now",
+            "[s] skip this version",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn the_help_line_describes_the_modal_keys() {
+        let (mut app, _s) = offered_app();
+        let lines = draw(&mut app, 100, 24);
+        let help = lines.last().unwrap();
+        assert!(help.contains("y update"), "{help}");
+        assert!(help.contains("s skip"), "{help}");
+    }
+
+    #[test]
+    fn no_modal_is_drawn_without_an_offer() {
+        let (mut app, _s) = app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
+        let text = screen(&draw(&mut app, 100, 24));
+        assert!(!text.contains("Update available"), "{text}");
     }
 
     #[test]

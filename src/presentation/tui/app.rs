@@ -2,6 +2,7 @@
 //! side effect goes through the application use cases held by `Services`.
 
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,8 +13,10 @@ use ratatui_image::protocol::Protocol;
 use super::preview::{PreviewCache, PreviewEntry};
 use crate::application::add::AddInput;
 use crate::application::apply::{ApplyOutcome, ApplyReport, ApplyStatus};
+use crate::application::update::{UpdateStatus, skip_version};
 use crate::application::{add, apply, list, remove};
 use crate::domain::cursor::CursorTheme;
+use crate::domain::update::update_hint;
 use crate::presentation::Services;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,12 +25,15 @@ pub enum Mode {
     PathInput,
     AliasInput,
     ConfirmRemove,
+    UpdatePrompt,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
     Quit,
+    /// The user accepted the update to this version.
+    Update(String),
 }
 
 pub struct App {
@@ -37,6 +43,9 @@ pub struct App {
     pub mode: Mode,
     pub input: String,
     pub status: String,
+    /// The newer version offered by the background check, until answered.
+    pub update_offer: Option<String>,
+    pub installed: String,
     pending_path: Option<PathBuf>,
     previews: PreviewCache,
     picker: Picker,
@@ -51,6 +60,8 @@ impl App {
             mode: Mode::Browse,
             input: String::new(),
             status: String::new(),
+            update_offer: None,
+            installed: services.update.installed.clone(),
             pending_path: None,
             previews: PreviewCache::default(),
             picker,
@@ -102,15 +113,76 @@ impl App {
         }
     }
 
+    /// Receives the background check result. A modal opens only when nothing
+    /// else is in progress; otherwise the offer waits for the next idle moment.
+    pub fn on_update_status(&mut self, status: UpdateStatus) {
+        match status {
+            UpdateStatus::Available { latest } => {
+                self.update_offer = Some(latest);
+                self.open_pending_offer();
+            }
+            UpdateStatus::Managed { latest, method } => {
+                self.status = format!("cursorswap {latest} is available. {}", update_hint(method));
+            }
+            _ => {}
+        }
+    }
+
+    /// Drains the background check channel; returns whether to redraw.
+    pub fn poll_update(&mut self, rx: &Receiver<UpdateStatus>) -> bool {
+        match rx.try_recv() {
+            Ok(status) => {
+                self.on_update_status(status);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent, services: &mut Services) -> Outcome {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Outcome::Quit;
         }
-        match self.mode {
+        let outcome = match self.mode {
             Mode::Browse => self.browse_key(key.code, services),
             Mode::PathInput | Mode::AliasInput => self.input_key(key.code, services),
             Mode::ConfirmRemove => self.confirm_key(key.code, services),
+            Mode::UpdatePrompt => self.update_key(key.code, services),
+        };
+        // An offer that arrived mid-task opens as soon as the task is over.
+        self.open_pending_offer();
+        outcome
+    }
+
+    fn open_pending_offer(&mut self) {
+        if self.mode == Mode::Browse && self.update_offer.is_some() {
+            self.mode = Mode::UpdatePrompt;
         }
+    }
+
+    fn update_key(&mut self, code: KeyCode, services: &mut Services) -> Outcome {
+        match code {
+            KeyCode::Char('y') => {
+                self.mode = Mode::Browse;
+                if let Some(version) = self.update_offer.take() {
+                    return Outcome::Update(version);
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.mode = Mode::Browse;
+                self.update_offer = None;
+            }
+            KeyCode::Char('s') => {
+                self.mode = Mode::Browse;
+                if let Some(version) = self.update_offer.take()
+                    && let Err(err) = skip_version(services.update.store.as_ref(), &version)
+                {
+                    self.status = format!("could not remember the choice: {err}");
+                }
+            }
+            _ => {}
+        }
+        Outcome::Continue
     }
 
     fn browse_key(&mut self, code: KeyCode, services: &mut Services) -> Outcome {
@@ -339,6 +411,7 @@ mod tests {
             searcher,
             packages,
             confirm,
+            update: crate::presentation::update::fixture::disabled(),
         };
         let app = App::new(Picker::halfblocks(), &services);
         Harness {
@@ -385,6 +458,169 @@ mod tests {
             .into_iter()
             .map(|t| t.name)
             .collect()
+    }
+
+    // --- update offer ---
+
+    fn update_harness() -> (Harness, crate::presentation::update::fixture::Probe) {
+        use crate::presentation::update::fixture::{Options, available, build};
+        let mut h = harness(two_themes());
+        let (update, probe) = build(Options::with(available())).into_parts();
+        h.services.update = update;
+        h.app.installed = h.services.update.installed.clone();
+        (h, probe)
+    }
+
+    fn available_v(version: &str) -> UpdateStatus {
+        UpdateStatus::Available {
+            latest: version.into(),
+        }
+    }
+
+    #[test]
+    fn the_modal_appears_when_the_check_reports_a_newer_version() {
+        let (mut h, _) = update_harness();
+        h.app.on_update_status(available_v("0.2.0"));
+        assert_eq!(h.app.mode, Mode::UpdatePrompt);
+        assert_eq!(h.app.update_offer.as_deref(), Some("0.2.0"));
+    }
+
+    #[test]
+    fn keys_work_normally_before_the_modal_appears() {
+        let (mut h, _) = update_harness();
+        ch(&mut h, 'j');
+        assert_eq!(h.app.selected, 1);
+        ch(&mut h, 'y');
+        ch(&mut h, 's');
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(press(&mut h, KeyCode::Char('d')), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::ConfirmRemove);
+    }
+
+    #[test]
+    fn yes_requests_the_install_of_the_offered_version() {
+        let (mut h, probe) = update_harness();
+        h.app.on_update_status(available_v("0.2.0"));
+        assert_eq!(ch(&mut h, 'y'), Outcome::Update("0.2.0".into()));
+        assert!(
+            probe.installed.borrow().is_empty(),
+            "installing is the caller's job"
+        );
+    }
+
+    #[test]
+    fn no_and_escape_dismiss_without_side_effects() {
+        for code in [KeyCode::Char('n'), KeyCode::Esc] {
+            let (mut h, probe) = update_harness();
+            h.app.on_update_status(available_v("0.2.0"));
+            assert_eq!(press(&mut h, code), Outcome::Continue);
+            assert_eq!(h.app.mode, Mode::Browse);
+            assert_eq!(h.app.update_offer, None);
+            assert_eq!(probe.store.saves.get(), 0);
+        }
+    }
+
+    #[test]
+    fn skip_stores_the_version_and_dismisses() {
+        let (mut h, probe) = update_harness();
+        h.app.on_update_status(available_v("0.2.0"));
+        assert_eq!(ch(&mut h, 's'), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(probe.store.state.borrow().skipped.as_deref(), Some("0.2.0"));
+    }
+
+    #[test]
+    fn the_modal_captures_other_keys_but_ctrl_c_still_quits() {
+        let (mut h, _) = update_harness();
+        h.app.on_update_status(available_v("0.2.0"));
+        for c in ['j', 'q', 'a', 'd'] {
+            assert_eq!(ch(&mut h, c), Outcome::Continue);
+        }
+        assert_eq!(h.app.selected, 0);
+        assert_eq!(h.app.mode, Mode::UpdatePrompt);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(h.app.handle_key(ctrl_c, &mut h.services), Outcome::Quit);
+    }
+
+    #[test]
+    fn an_offer_waits_while_the_user_is_typing() {
+        let (mut h, _) = update_harness();
+        ch(&mut h, 'a');
+        type_text(&mut h, "/x");
+        h.app.on_update_status(available_v("0.2.0"));
+        assert_eq!(h.app.mode, Mode::PathInput);
+        assert_eq!(h.app.input, "/x");
+        press(&mut h, KeyCode::Esc);
+        assert_eq!(h.app.mode, Mode::UpdatePrompt);
+    }
+
+    #[test]
+    fn a_pending_confirmation_keeps_its_own_y_key() {
+        let (mut h, _) = update_harness();
+        ch(&mut h, 'd');
+        h.app.on_update_status(available_v("0.2.0"));
+        assert_eq!(h.app.mode, Mode::ConfirmRemove);
+        assert_eq!(ch(&mut h, 'y'), Outcome::Continue);
+        assert_eq!(registry_names(&h), ["Bibata"]);
+        assert_eq!(h.app.mode, Mode::UpdatePrompt);
+    }
+
+    #[test]
+    fn the_modal_does_not_wipe_the_result_of_an_apply() {
+        let (mut h, _) = update_harness();
+        press(&mut h, KeyCode::Enter);
+        let status = h.app.status.clone();
+        assert!(status.contains("applied"), "{status}");
+        h.app.on_update_status(available_v("0.2.0"));
+        assert_eq!(h.app.mode, Mode::UpdatePrompt);
+        assert_eq!(h.app.status, status);
+        assert_eq!(h.calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn managed_installs_get_a_status_notice_instead_of_a_modal() {
+        let (mut h, _) = update_harness();
+        h.app.on_update_status(UpdateStatus::Managed {
+            latest: "0.2.0".into(),
+            method: crate::domain::update::InstallMethod::PackageManager,
+        });
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(h.app.status.contains("0.2.0"), "{}", h.app.status);
+        assert!(h.app.status.contains("package manager"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn quiet_results_change_nothing() {
+        let statuses = [
+            UpdateStatus::UpToDate {
+                latest: "0.1.0".into(),
+            },
+            UpdateStatus::Skipped {
+                latest: "0.2.0".into(),
+            },
+            UpdateStatus::Unavailable("offline".into()),
+        ];
+        for status in statuses {
+            let (mut h, _) = update_harness();
+            h.app.on_update_status(status);
+            assert_eq!(h.app.mode, Mode::Browse);
+            assert!(h.app.status.is_empty());
+            assert_eq!(h.app.update_offer, None);
+        }
+    }
+
+    #[test]
+    fn polling_picks_up_the_background_result_without_blocking() {
+        use std::sync::mpsc;
+        let (mut h, _) = update_harness();
+        let (tx, rx) = mpsc::channel();
+        assert!(!h.app.poll_update(&rx));
+        assert_eq!(h.app.mode, Mode::Browse);
+        tx.send(available_v("0.2.0")).unwrap();
+        assert!(h.app.poll_update(&rx));
+        assert_eq!(h.app.mode, Mode::UpdatePrompt);
+        drop(tx);
+        assert!(!h.app.poll_update(&rx));
     }
 
     // --- startup ---

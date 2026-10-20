@@ -1,16 +1,20 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::domain::cursor::{Alias, CursorTheme};
 use crate::domain::error::{
     ApplyError, ConfirmError, CurrentCursorError, PackageError, PreviewError, RepositoryError,
+    UpdateError,
 };
 use crate::domain::package::PackageInfo;
 use crate::domain::ports::{
-    Confirm, CurrentCursorProvider, CursorApplier, CursorRepository, PackageManager, PackageSearch,
-    Preview, PreviewLoader, ThemeInspector,
+    BinaryInstaller, Clock, Confirm, CurrentCursorProvider, CursorApplier, CursorRepository,
+    InstallMethodDetector, PackageManager, PackageSearch, Preview, PreviewLoader, Relauncher,
+    ReleaseSource, ThemeInspector, UpdateStateStore,
 };
+use crate::domain::update::{InstallMethod, ReleaseInfo, UpdateState};
 
 pub fn theme(name: &str, alias: Option<&str>) -> CursorTheme {
     CursorTheme::new(
@@ -159,6 +163,117 @@ impl PreviewLoader for FakePreviewLoader {
     }
 }
 
+pub fn release(version: &str) -> ReleaseInfo {
+    ReleaseInfo {
+        version: version.to_string(),
+        binary_url: format!("https://example.invalid/{version}/bin"),
+        checksum_url: format!("https://example.invalid/{version}/bin.sha256"),
+    }
+}
+
+pub struct FakeReleaseSource {
+    pub result: Result<ReleaseInfo, UpdateError>,
+    pub calls: Rc<Cell<usize>>,
+}
+
+impl FakeReleaseSource {
+    pub fn latest(version: &str) -> Self {
+        FakeReleaseSource {
+            result: Ok(release(version)),
+            calls: Rc::default(),
+        }
+    }
+
+    pub fn failing() -> Self {
+        FakeReleaseSource {
+            result: Err(UpdateError::Network("offline".into())),
+            calls: Rc::default(),
+        }
+    }
+}
+
+impl ReleaseSource for FakeReleaseSource {
+    fn latest_stable(&self) -> Result<ReleaseInfo, UpdateError> {
+        self.calls.set(self.calls.get() + 1);
+        self.result.clone()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct FakeStateStore {
+    pub state: Rc<RefCell<UpdateState>>,
+    pub saves: Rc<Cell<usize>>,
+    pub fail_save: bool,
+}
+
+impl FakeStateStore {
+    pub fn with(state: UpdateState) -> Self {
+        FakeStateStore {
+            state: Rc::new(RefCell::new(state)),
+            ..FakeStateStore::default()
+        }
+    }
+}
+
+impl UpdateStateStore for FakeStateStore {
+    fn load(&self) -> UpdateState {
+        self.state.borrow().clone()
+    }
+
+    fn save(&self, state: &UpdateState) -> Result<(), UpdateError> {
+        if self.fail_save {
+            return Err(UpdateError::Io("read-only".into()));
+        }
+        self.saves.set(self.saves.get() + 1);
+        *self.state.borrow_mut() = state.clone();
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct FakeInstaller {
+    pub installed: Rc<RefCell<Vec<ReleaseInfo>>>,
+    pub fail: bool,
+}
+
+impl BinaryInstaller for FakeInstaller {
+    fn install(&self, release: &ReleaseInfo) -> Result<(), UpdateError> {
+        if self.fail {
+            return Err(UpdateError::ChecksumMismatch {
+                expected: "a".into(),
+                actual: "b".into(),
+            });
+        }
+        self.installed.borrow_mut().push(release.clone());
+        Ok(())
+    }
+}
+
+pub struct FakeDetector(pub InstallMethod);
+
+impl InstallMethodDetector for FakeDetector {
+    fn detect(&self) -> InstallMethod {
+        self.0
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct FakeRelauncher {
+    pub calls: Rc<RefCell<Vec<Vec<OsString>>>>,
+    pub fail: bool,
+}
+
+impl Relauncher for FakeRelauncher {
+    fn relaunch(&self, args: &[OsString]) -> Result<(), UpdateError> {
+        self.calls.borrow_mut().push(args.to_vec());
+        if self.fail {
+            Err(UpdateError::Relaunch("exec failed".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Inspector that accepts only the listed directories and names them by their last component.
 pub struct PathInspector(pub Vec<PathBuf>);
 
@@ -254,6 +369,14 @@ impl FakeConfirm {
             answer: Ok(answer),
             log: Rc::clone(log),
         }
+    }
+}
+
+pub struct FakeClock(pub u64);
+
+impl Clock for FakeClock {
+    fn now_secs(&self) -> u64 {
+        self.0
     }
 }
 

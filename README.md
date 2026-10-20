@@ -155,6 +155,7 @@ cursorswap <COMMAND>
 | `cursorswap remove <QUERY>` | Remove a theme from the registry (files are not touched) |
 | `cursorswap search <TERM>` | Search the AUR (through `yay`) for cursor themes |
 | `cursorswap install <PACKAGE> [--alias <ALIAS>]` | Install an AUR package with `yay` and register the cursor themes it provides |
+| `cursorswap update [--check] [--yes]` | Check for a newer release and install it (see [Updating](#updating)) |
 | `cursorswap --help` / `--version` | Help and version |
 
 ### Names and aliases
@@ -162,7 +163,7 @@ cursorswap <COMMAND>
 - A query is matched against theme **names** first (case-insensitive), then **aliases**.
 - By default a theme's name is its directory name. Override it with `--name`.
 - An alias is 1 to 8 ASCII letters or digits, for example `N` or `nord`. It cannot be the same as another theme's name or alias.
-- `list`, `add`, `remove`, `current`, `search` and `install` are subcommands. A theme named like one of them can only be applied through its alias.
+- `list`, `add`, `remove`, `current`, `search`, `install` and `update` are subcommands. A theme named like one of them can only be applied through its alias.
 
 ### Registering and removing themes
 
@@ -279,6 +280,31 @@ Locations are derived from these environment variables:
 | `XDG_DATA_HOME` | Where theme symlinks are created (`icons/`) | `$HOME/.local/share` |
 | `HOME` | Fallback for both | none |
 
+## Updating
+
+When you run `cursorswap` from a terminal, it checks GitHub for a newer **stable** release (2 second timeout, result cached for 6 hours in `~/.config/cursorswap/conf/update-state.toml`). If one exists you are asked:
+
+```
+A new version of cursorswap is available: 0.2.0 (you have 0.1.0).
+Update now? [y]es / [n]o / [s]kip this version
+```
+
+- **yes** downloads the release, verifies its SHA-256 checksum, replaces the binary atomically and re-runs your command on the new version. The TUI shows the same choice as a modal.
+- **no** continues; you are asked again once the cache expires.
+- **skip** remembers that version and stays quiet until a newer one is released.
+
+Any failure (offline, rate limited, bad response) is silent and never blocks your command. Nothing is installed without an explicit yes.
+
+```sh
+cursorswap update --check   # print installed and latest versions; exit 0 up to date, 10 update available, 1 error
+cursorswap update           # install the latest release after confirmation
+cursorswap update --yes     # install without asking
+```
+
+The check never runs, and nothing is downloaded, when stdin or stdout is not a terminal, when `CI` is set, or when you opt out with `--no-update-check`, `CURSORSWAP_NO_UPDATE_CHECK=1`, or `update_check = false` in `~/.config/cursorswap/conf/config.toml`. Scripts keep their current behavior and exit codes.
+
+A binary managed by a package manager (under `/usr/`) or installed with `cargo install` is never overwritten in place: you get a notice with the command to update it instead. Release binaries are published for `x86_64-unknown-linux-gnu`.
+
 ## Troubleshooting
 
 **`error: no cursor matches "..."` (exit 2).** The query is neither a registered name nor an alias. Run `cursorswap list`.
@@ -295,7 +321,7 @@ Locations are derived from these environment variables:
 
 **`add` says the path is not a valid theme.** The directory needs an `index.theme` file and a `cursors/` folder inside it.
 
-**An alias is rejected.** Aliases are 1 to 8 ASCII letters or digits, must be unique, and cannot be `list`, `add`, `remove`, `current`, `search` or `install`.
+**An alias is rejected.** Aliases are 1 to 8 ASCII letters or digits, must be unique, and cannot be `list`, `add`, `remove`, `current`, `search`, `install` or `update`.
 
 ## Limitations
 

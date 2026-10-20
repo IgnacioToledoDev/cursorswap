@@ -59,6 +59,22 @@ pub enum CurrentCursorError {
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum UpdateError {
+    #[error("network failure: {0}")]
+    Network(String),
+    #[error("unexpected release data: {0}")]
+    Parse(String),
+    #[error("the release has no downloadable binary for this platform")]
+    MissingAssets,
+    #[error("checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
+    #[error("io failure: {0}")]
+    Io(String),
+    #[error("could not restart cursorswap: {0}")]
+    Relaunch(String),
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum PackageError {
     #[error("`{tool}` was not found in your PATH; {hint}")]
     ToolMissing { tool: String, hint: String },
