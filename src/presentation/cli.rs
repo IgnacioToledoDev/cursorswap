@@ -5,7 +5,8 @@ use clap::{Parser, Subcommand};
 
 use crate::application::add::AddInput;
 use crate::application::error::ApplicationError;
-use crate::application::{add, apply, current, list, remove};
+use crate::application::install::{self, InstallInput};
+use crate::application::{add, apply, current, list, remove, search};
 
 use super::Services;
 use super::exit_code::Exit;
@@ -13,7 +14,7 @@ use super::update::{self, Flow};
 use super::{output, tui};
 
 const AFTER_HELP: &str = "\
-A theme named like a subcommand (list, add, remove, current, update) cannot be \
+A theme named like a subcommand (list, add, remove, current, search, install, update) cannot be \
 selected by name; select it through its alias instead.
 
 A new stable release is looked up on startup when run from a terminal; \
@@ -64,6 +65,19 @@ pub enum Command {
     Remove { query: String },
     /// Show the active theme
     Current,
+    /// Search the AUR for cursor themes (requires yay)
+    Search {
+        /// Text to search for
+        term: String,
+    },
+    /// Install a cursor theme package with yay and register its themes
+    Install {
+        /// Exact package name, as shown by `search`
+        package: String,
+        /// Short alias for the theme: only valid when the package provides exactly one
+        #[arg(long)]
+        alias: Option<String>,
+    },
     /// Check for a newer release and install it
     Update {
         /// Only report whether an update is available (exit 10 if so)
@@ -172,6 +186,22 @@ fn run_command(command: Command, services: &mut Services, out: &mut dyn Write) -
             let theme = remove::remove(services.repo.as_mut(), &query).map_err(fail)?;
             emit(out, &format!("{}\n", output::format_removed(&theme)));
         }
+        Command::Search { term } => {
+            let found = search::search(services.searcher.as_ref(), &term).map_err(fail)?;
+            emit(out, &output::format_search(&found, &term));
+        }
+        Command::Install { package, alias } => {
+            let input = InstallInput { package, alias };
+            let report = install::install(
+                services.packages.as_ref(),
+                services.confirm.as_ref(),
+                services.repo.as_mut(),
+                services.inspector.as_ref(),
+                input,
+            )
+            .map_err(fail)?;
+            emit(out, &output::format_install(&report));
+        }
         Command::Update { .. } => unreachable!("handled before run_command"),
     }
     Ok(Exit::Success)
@@ -250,6 +280,45 @@ mod parse_tests {
     }
 
     #[test]
+    fn search_takes_one_term() {
+        assert_eq!(
+            parse(&["search", "nordzy"]).unwrap().command,
+            Some(Command::Search {
+                term: "nordzy".into()
+            })
+        );
+        assert!(parse(&["search"]).is_err());
+        assert!(parse(&["search", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn install_takes_a_package_and_an_optional_alias() {
+        assert_eq!(
+            parse(&["install", "nordzy-cursors"]).unwrap().command,
+            Some(Command::Install {
+                package: "nordzy-cursors".into(),
+                alias: None
+            })
+        );
+        assert_eq!(
+            parse(&["install", "nordzy-cursors", "--alias", "nz"])
+                .unwrap()
+                .command,
+            Some(Command::Install {
+                package: "nordzy-cursors".into(),
+                alias: Some("nz".into())
+            })
+        );
+    }
+
+    #[test]
+    fn install_without_a_package_is_rejected() {
+        assert!(parse(&["install"]).is_err());
+        assert!(parse(&["install", "--alias", "nz"]).is_err());
+        assert!(parse(&["install", "a", "b"]).is_err());
+    }
+
+    #[test]
     fn query_and_subcommand_cannot_be_mixed() {
         assert!(parse(&["Nordzy", "list"]).is_err());
     }
@@ -301,7 +370,7 @@ mod parse_tests {
     #[test]
     fn help_footer_documents_exit_codes_and_reserved_names() {
         let help = parse(&["--help"]).unwrap_err().to_string();
-        for needle in ["Exit codes", "3  ", "alias"] {
+        for needle in ["Exit codes", "3  ", "alias", "search, install"] {
             assert!(help.contains(needle), "missing {needle:?}");
         }
     }
@@ -311,8 +380,11 @@ mod parse_tests {
 mod execute_tests {
     use super::*;
     use crate::application::fakes::{
-        CallLog, FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, applier, theme,
+        CallLog, FakeConfirm, FakeCurrent, FakeInspector, FakePackages, FakePreviewLoader,
+        FakeRepository, PathInspector, applier, idle_package_services, theme,
     };
+    use crate::domain::error::ConfirmError;
+    use crate::domain::package::PackageInfo;
 
     struct Run {
         exit: Exit,
@@ -333,6 +405,7 @@ mod execute_tests {
             .enumerate()
             .map(|(i, f)| applier(["a", "b", "c"][i], *f, &log))
             .collect();
+        let (searcher, packages, confirm) = idle_package_services();
         let mut services = Services {
             repo: Box::new(FakeRepository::with(themes)),
             inspector: Box::new(FakeInspector {
@@ -342,6 +415,9 @@ mod execute_tests {
             current: Box::new(FakeCurrent(Ok(current.map(String::from)))),
             preview: Box::new(FakePreviewLoader::failing("no preview in cli tests")),
             appliers,
+            searcher,
+            packages,
+            confirm,
             update: crate::presentation::update::fixture::disabled(),
         };
         let cli =
@@ -525,6 +601,151 @@ mod execute_tests {
         let r = run(&["remove", "ghost"], &[]);
         assert_eq!(r.exit, Exit::NotFound);
     }
+
+    fn pkg(name: &str, description: &str) -> PackageInfo {
+        PackageInfo {
+            repository: "aur".into(),
+            name: name.into(),
+            version: "1.0-1".into(),
+            description: description.into(),
+            installed: false,
+        }
+    }
+
+    const NORDZY_FILES: [&str; 3] = [
+        "/usr/share/icons/Nordzy/index.theme",
+        "/usr/share/icons/Nordzy/cursors",
+        "/usr/share/icons/Nordzy/cursors/left_ptr",
+    ];
+
+    struct Pkg {
+        exit: Exit,
+        out: String,
+        err: String,
+        log: CallLog,
+        themes: Vec<crate::domain::cursor::CursorTheme>,
+    }
+
+    /// Runs a command with package fakes (search and install) shaped by `configure`.
+    fn run_pkg(
+        args: &[&str],
+        answer: Result<bool, ConfirmError>,
+        configure: impl Fn(&mut FakePackages),
+    ) -> Pkg {
+        let log = CallLog::default();
+        let fake = || {
+            let mut fake = FakePackages::with_files(&log, &NORDZY_FILES);
+            configure(&mut fake);
+            fake
+        };
+        let mut confirm = FakeConfirm::answering(true, &log);
+        confirm.answer = answer;
+        let mut services = Services {
+            repo: Box::new(FakeRepository::default()),
+            inspector: Box::new(PathInspector(vec!["/usr/share/icons/Nordzy".into()])),
+            current: Box::new(FakeCurrent(Ok(None))),
+            preview: Box::new(FakePreviewLoader::failing("none")),
+            appliers: Vec::new(),
+            searcher: Box::new(fake()),
+            packages: Box::new(fake()),
+            confirm: Box::new(confirm),
+            update: crate::presentation::update::fixture::disabled(),
+        };
+        let cli =
+            Cli::try_parse_from(std::iter::once("cursorswap").chain(args.iter().copied())).unwrap();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let exit = execute(cli, &mut services, &mut "".as_bytes(), &mut out, &mut err);
+        Pkg {
+            exit,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+            themes: services.repo.list().unwrap(),
+            log,
+        }
+    }
+
+    #[test]
+    fn search_prints_only_cursor_like_packages() {
+        let r = run_pkg(&["search", "nord"], Ok(true), |p| {
+            p.results = vec![pkg("nordzy-cursors", "Nord"), pkg("htop", "viewer")];
+        });
+        assert_eq!(r.exit, Exit::Success);
+        assert_eq!(r.out, "aur/nordzy-cursors 1.0-1\n    Nord\n");
+        assert_eq!(*r.log.borrow(), ["search:nord"]);
+    }
+
+    #[test]
+    fn search_without_results_succeeds_with_a_message() {
+        let r = run_pkg(&["search", "zzz"], Ok(true), |_| {});
+        assert_eq!(r.exit, Exit::Success);
+        assert!(r.out.contains("No cursor themes found"));
+    }
+
+    #[test]
+    fn search_failure_exits_1_on_stderr() {
+        let r = run_pkg(&["search", "x"], Ok(true), |p| p.search_fails = true);
+        assert_eq!(r.exit, Exit::Error);
+        assert!(r.out.is_empty());
+        assert!(r.err.starts_with("error: "));
+    }
+
+    #[test]
+    fn install_registers_the_theme_and_reports_it() {
+        let r = run_pkg(&["install", "nordzy-cursors"], Ok(true), |_| {});
+        assert_eq!(r.exit, Exit::Success);
+        assert_eq!(r.out, "installed package nordzy-cursors\nadded Nordzy\n");
+        assert_eq!(r.themes.len(), 1);
+    }
+
+    #[test]
+    fn install_alias_flows_through_to_the_registry() {
+        let r = run_pkg(
+            &["install", "nordzy-cursors", "--alias", "nz"],
+            Ok(true),
+            |_| {},
+        );
+        assert_eq!(r.exit, Exit::Success);
+        assert_eq!(r.themes[0].alias.as_ref().unwrap().as_str(), "nz");
+    }
+
+    #[test]
+    fn install_declined_exits_1_and_installs_nothing() {
+        let r = run_pkg(&["install", "nordzy-cursors"], Ok(false), |_| {});
+        assert_eq!(r.exit, Exit::Error);
+        assert!(r.err.contains("nothing was installed"));
+        assert!(!r.log.borrow().iter().any(|e| e.starts_with("install:")));
+    }
+
+    #[test]
+    fn install_without_a_terminal_exits_1_with_a_clear_message() {
+        let r = run_pkg(
+            &["install", "nordzy-cursors"],
+            Err(ConfirmError::NotInteractive),
+            |_| {},
+        );
+        assert_eq!(r.exit, Exit::Error);
+        assert!(r.err.contains("not a terminal"));
+        assert!(!r.log.borrow().iter().any(|e| e.starts_with("install:")));
+    }
+
+    #[test]
+    fn install_with_missing_yay_exits_1_with_instructions() {
+        let r = run_pkg(&["install", "nordzy-cursors"], Ok(true), |p| {
+            p.missing_tool = true
+        });
+        assert_eq!(r.exit, Exit::Error);
+        assert!(r.err.contains("yay"));
+        assert_eq!(*r.log.borrow(), ["ensure"]);
+    }
+
+    #[test]
+    fn install_failure_exits_1_and_registers_nothing() {
+        let r = run_pkg(&["install", "nordzy-cursors"], Ok(true), |p| {
+            p.install_fails = true
+        });
+        assert_eq!(r.exit, Exit::Error);
+        assert!(r.themes.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -533,7 +754,8 @@ mod update_flow_tests {
 
     use super::*;
     use crate::application::fakes::{
-        CallLog, FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, applier, theme,
+        CallLog, FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, applier,
+        idle_package_services, theme,
     };
     use crate::application::update::{CheckOptions, UpdateStatus};
     use crate::presentation::update::fixture::{Options, Probe, available, build};
@@ -549,6 +771,7 @@ mod update_flow_tests {
     fn run(args: &[&str], status: UpdateStatus, answer: &str) -> Run {
         let (update, probe) = build(Options::with(status)).into_parts();
         let log = CallLog::default();
+        let (searcher, packages, confirm) = idle_package_services();
         let mut services = Services {
             repo: Box::new(FakeRepository::with(vec![theme("Nordzy", Some("nz"))])),
             inspector: Box::new(FakeInspector {
@@ -558,6 +781,9 @@ mod update_flow_tests {
             current: Box::new(FakeCurrent(Ok(None))),
             preview: Box::new(FakePreviewLoader::failing("none")),
             appliers: vec![applier("a", false, &log)],
+            searcher,
+            packages,
+            confirm,
             update,
         };
         let cli =

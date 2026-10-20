@@ -14,6 +14,10 @@ pub enum DomainError {
     AliasCollision(String),
     #[error("no cursor matches {0:?}")]
     NotFound(String),
+    #[error("invalid package name {0:?}")]
+    InvalidPackageName(String),
+    #[error("invalid search term {0:?}: it must not be empty or start with '-'")]
+    InvalidSearchTerm(String),
 }
 
 #[derive(Debug, Error)]
@@ -68,4 +72,23 @@ pub enum UpdateError {
     Io(String),
     #[error("could not restart cursorswap: {0}")]
     Relaunch(String),
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum PackageError {
+    #[error("`{tool}` was not found in your PATH; {hint}")]
+    ToolMissing { tool: String, hint: String },
+    #[error("{0}")]
+    Command(String),
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum ConfirmError {
+    #[error(
+        "confirmation is required but standard input is not a terminal; \
+         run this command from an interactive terminal"
+    )]
+    NotInteractive,
+    #[error("could not read the confirmation: {0}")]
+    Io(String),
 }

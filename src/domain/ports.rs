@@ -1,8 +1,12 @@
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::cursor::CursorTheme;
-use super::error::{ApplyError, CurrentCursorError, PreviewError, RepositoryError, UpdateError};
+use super::error::{
+    ApplyError, ConfirmError, CurrentCursorError, PackageError, PreviewError, RepositoryError,
+    UpdateError,
+};
+use super::package::PackageInfo;
 use super::update::{InstallMethod, ReleaseInfo, UpdateState};
 
 pub trait CursorRepository {
@@ -74,4 +78,24 @@ pub trait Relauncher {
 
 pub trait Clock {
     fn now_secs(&self) -> u64;
+}
+
+/// Searches a package index for packages matching a term.
+pub trait PackageSearch {
+    fn search(&self, term: &str) -> Result<Vec<PackageInfo>, PackageError>;
+}
+
+/// Installs packages and reports what they put on disk.
+pub trait PackageManager {
+    /// Fails with `PackageError::ToolMissing` when the installer is unavailable.
+    fn ensure_available(&self) -> Result<(), PackageError>;
+    /// Installs `package` interactively: the installer talks to the user itself.
+    fn install(&self, package: &str) -> Result<(), PackageError>;
+    /// Lists every path owned by an installed `package`.
+    fn installed_files(&self, package: &str) -> Result<Vec<PathBuf>, PackageError>;
+}
+
+/// Asks the user a yes/no question. The default answer is no.
+pub trait Confirm {
+    fn confirm(&self, prompt: &str) -> Result<bool, ConfirmError>;
 }

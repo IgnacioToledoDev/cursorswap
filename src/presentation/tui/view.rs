@@ -194,6 +194,7 @@ mod tests {
         current: Option<&str>,
         loader: FakePreviewLoader,
     ) -> Services {
+        let (searcher, packages, confirm) = crate::application::fakes::idle_package_services();
         Services {
             repo: Box::new(FakeRepository::with(themes)),
             inspector: Box::new(FakeInspector {
@@ -203,6 +204,9 @@ mod tests {
             current: Box::new(FakeCurrent(Ok(current.map(String::from)))),
             preview: Box::new(loader),
             appliers: Vec::new(),
+            searcher,
+            packages,
+            confirm,
             update: crate::presentation::update::fixture::disabled(),
         }
     }

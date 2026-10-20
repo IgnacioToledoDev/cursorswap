@@ -1,0 +1,14 @@
+aur/gfie-bin 3.6-3 (+0 0.00) [42d9h] 
+    Greenfish Icon Editor Pro (GFIE Pro) is a powerful open source image editor, especially suitable for creating icons, cursors, animations and icon libraries.
+aur/memex-bin 0.29.1-1 (+0 0.00) [4h55m] 
+    Search and resume Claude Code, Codex, Pi, OpenCode, Copilot and Cursor transcripts (prebuilt binary)
+aur/pandwaita 1.0-1 (+1 0.00) [2796d22h] 
+    Icon theme based on Adwaita but with 3 cute panda cursors.
+aur/jmap-mcp 0.1.0-1 (+0 0.00) [289d6h] 
+    mcp server for jmap email - works with claude desktop, cursor, and other mcp clients
+aur/xban 1.0-1 (+1 0.00) [1440d9h] 
+    Hides the X mouse cursor on keypress and reveals it again when the mouse cursor moves
+aur/vimix-kanagawa-cursors 2.2.0-1 (+0 0.00) [547d14h] (Installed)
+    XCursor theme using Kanagawa colours, based on Vimix cursors
+aur/gnome-shell-extension-peek-top-bar-on-fullscreen-git r44.ff1bead-1 (+0 0.00) [943d18h] 
+    Gnome Extension that triggers top panel to show up on full screen apps when cursor hovers the top edge of the screen

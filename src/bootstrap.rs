@@ -16,9 +16,9 @@ use crate::domain::update::{CheckEnv, NO_UPDATE_ENV, disabled_reason, env_flag};
 use crate::infrastructure::{
     CommandRunner, EnvsConfCurrentProvider, ExeInstaller, ExePathDetector, ExecRelauncher,
     FsThemeInspector, GithubReleaseSource, GsettingsApplier, GtkSettingsApplier, HyprEnvsApplier,
-    HyprctlApplier, IconPathApplier, SystemClock, SystemCommandRunner, TomlCursorRepository,
-    TomlUpdateStateStore, UreqHttp, XcursorPreviewLoader, read_cursor_size, registry_path_from,
-    update_check_enabled,
+    HyprctlApplier, IconPathApplier, SystemClock, SystemCommandRunner, TerminalConfirm,
+    TomlCursorRepository, TomlUpdateStateStore, UreqHttp, XcursorPreviewLoader, YayPackageManager,
+    read_cursor_size, registry_path_from, update_check_enabled,
 };
 use crate::presentation::Services;
 use crate::presentation::cli::{Cli, execute};
@@ -90,7 +90,7 @@ pub fn build_services<R: CommandRunner + Clone + 'static>(
         Box::new(HyprEnvsApplier::new(paths.hypr_envs.clone())),
         Box::new(GtkSettingsApplier::new(paths.gtk_settings.clone())),
         Box::new(GsettingsApplier::new(runner.clone())),
-        Box::new(HyprctlApplier::new(runner, size)),
+        Box::new(HyprctlApplier::new(runner.clone(), size)),
     ];
     Services {
         repo: Box::new(TomlCursorRepository::new(paths.registry.clone())),
@@ -98,6 +98,9 @@ pub fn build_services<R: CommandRunner + Clone + 'static>(
         current: Box::new(EnvsConfCurrentProvider::new(paths.hypr_envs.clone())),
         preview: Box::new(XcursorPreviewLoader::new()),
         appliers,
+        searcher: Box::new(YayPackageManager::new(runner.clone())),
+        packages: Box::new(YayPackageManager::new(runner)),
+        confirm: Box::new(TerminalConfirm),
         update,
     }
 }
@@ -398,5 +401,25 @@ mod tests {
         assert_eq!(services.args, args);
         let disabled = build_update_services(&test_paths(), false, vec![], None);
         assert!(!disabled.enabled);
+    }
+
+    #[test]
+    fn package_services_go_through_the_command_runner() {
+        let runner = FakeRunner::ok();
+        let services = build_services(&test_paths(), runner.clone(), fixture::disabled());
+        services.searcher.search("cursor").unwrap();
+        services.packages.install("some-cursors").unwrap();
+        services.packages.installed_files("some-cursors").unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                vec!["yay", "-Ss", "cursor"],
+                vec!["pacman", "-Ql", "some-cursors"]
+            ]
+        );
+        assert_eq!(
+            *runner.interactive_calls.borrow(),
+            [vec!["yay", "-S", "some-cursors"]]
+        );
     }
 }

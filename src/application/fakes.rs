@@ -5,12 +5,14 @@ use std::rc::Rc;
 
 use crate::domain::cursor::{Alias, CursorTheme};
 use crate::domain::error::{
-    ApplyError, CurrentCursorError, PreviewError, RepositoryError, UpdateError,
+    ApplyError, ConfirmError, CurrentCursorError, PackageError, PreviewError, RepositoryError,
+    UpdateError,
 };
+use crate::domain::package::PackageInfo;
 use crate::domain::ports::{
-    BinaryInstaller, Clock, CurrentCursorProvider, CursorApplier, CursorRepository,
-    InstallMethodDetector, Preview, PreviewLoader, Relauncher, ReleaseSource, ThemeInspector,
-    UpdateStateStore,
+    BinaryInstaller, Clock, Confirm, CurrentCursorProvider, CursorApplier, CursorRepository,
+    InstallMethodDetector, PackageManager, PackageSearch, Preview, PreviewLoader, Relauncher,
+    ReleaseSource, ThemeInspector, UpdateStateStore,
 };
 use crate::domain::update::{InstallMethod, ReleaseInfo, UpdateState};
 
@@ -272,10 +274,129 @@ impl Relauncher for FakeRelauncher {
     }
 }
 
+/// Inspector that accepts only the listed directories and names them by their last component.
+pub struct PathInspector(pub Vec<PathBuf>);
+
+impl ThemeInspector for PathInspector {
+    fn is_valid_theme_dir(&self, path: &Path) -> bool {
+        self.0.iter().any(|p| p == path)
+    }
+
+    fn dir_name(&self, path: &Path) -> Option<String> {
+        path.file_name().map(|n| n.to_string_lossy().into_owned())
+    }
+}
+
+/// Package search and installer double; every call is appended to `log`.
+pub struct FakePackages {
+    pub log: CallLog,
+    pub results: Vec<PackageInfo>,
+    pub files: Vec<PathBuf>,
+    pub missing_tool: bool,
+    pub install_fails: bool,
+    pub search_fails: bool,
+}
+
+impl FakePackages {
+    pub fn new(log: &CallLog) -> Self {
+        FakePackages {
+            log: Rc::clone(log),
+            results: Vec::new(),
+            files: Vec::new(),
+            missing_tool: false,
+            install_fails: false,
+            search_fails: false,
+        }
+    }
+
+    pub fn with_files(log: &CallLog, files: &[&str]) -> Self {
+        FakePackages {
+            files: files.iter().map(PathBuf::from).collect(),
+            ..Self::new(log)
+        }
+    }
+
+    fn record(&self, entry: String) {
+        self.log.borrow_mut().push(entry);
+    }
+}
+
+impl PackageSearch for FakePackages {
+    fn search(&self, term: &str) -> Result<Vec<PackageInfo>, PackageError> {
+        self.record(format!("search:{term}"));
+        if self.search_fails {
+            return Err(PackageError::Command("search failed".to_string()));
+        }
+        Ok(self.results.clone())
+    }
+}
+
+impl PackageManager for FakePackages {
+    fn ensure_available(&self) -> Result<(), PackageError> {
+        self.record("ensure".to_string());
+        if self.missing_tool {
+            return Err(PackageError::ToolMissing {
+                tool: "yay".to_string(),
+                hint: "install it".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn install(&self, package: &str) -> Result<(), PackageError> {
+        self.record(format!("install:{package}"));
+        if self.install_fails {
+            return Err(PackageError::Command("install failed".to_string()));
+        }
+        Ok(())
+    }
+
+    fn installed_files(&self, package: &str) -> Result<Vec<PathBuf>, PackageError> {
+        self.record(format!("files:{package}"));
+        Ok(self.files.clone())
+    }
+}
+
+/// Confirmation double that records each prompt as `confirm:<prompt>`.
+pub struct FakeConfirm {
+    pub answer: Result<bool, ConfirmError>,
+    pub log: CallLog,
+}
+
+impl FakeConfirm {
+    pub fn answering(answer: bool, log: &CallLog) -> Self {
+        FakeConfirm {
+            answer: Ok(answer),
+            log: Rc::clone(log),
+        }
+    }
+}
+
 pub struct FakeClock(pub u64);
 
 impl Clock for FakeClock {
     fn now_secs(&self) -> u64 {
         self.0
     }
+}
+
+impl Confirm for FakeConfirm {
+    fn confirm(&self, prompt: &str) -> Result<bool, ConfirmError> {
+        self.log.borrow_mut().push(format!("confirm:{prompt}"));
+        self.answer.clone()
+    }
+}
+
+/// Package-related services for tests that never exercise them.
+pub fn idle_package_services() -> (
+    Box<dyn PackageSearch>,
+    Box<dyn PackageManager>,
+    Box<dyn Confirm>,
+) {
+    let log = CallLog::default();
+    (
+        Box::new(FakePackages::new(&log)),
+        Box::new(FakePackages::new(&log)),
+        Box::new(FakeConfirm::answering(false, &log)),
+    )
 }

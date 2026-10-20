@@ -398,6 +398,7 @@ mod tests {
             .enumerate()
             .map(|(i, fail)| applier(["alpha", "beta", "gamma"][i], *fail, &calls))
             .collect();
+        let (searcher, packages, confirm) = crate::application::fakes::idle_package_services();
         let services = Services {
             repo: Box::new(repo),
             inspector: Box::new(FakeInspector {
@@ -407,6 +408,9 @@ mod tests {
             current: Box::new(FakeCurrent(Ok(current.map(String::from)))),
             preview: Box::new(loader),
             appliers,
+            searcher,
+            packages,
+            confirm,
             update: crate::presentation::update::fixture::disabled(),
         };
         let app = App::new(Picker::halfblocks(), &services);
