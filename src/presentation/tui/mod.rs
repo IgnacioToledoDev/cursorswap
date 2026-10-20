@@ -4,6 +4,8 @@ mod terminal;
 mod view;
 
 use std::io;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEventKind};
@@ -12,6 +14,7 @@ use ratatui::layout::Rect;
 use thiserror::Error;
 
 use super::Services;
+use crate::application::update::{CheckOptions, UpdateStatus};
 use app::{App, Outcome};
 use terminal::TerminalSession;
 
@@ -23,19 +26,46 @@ pub enum TuiError {
     Terminal(#[from] io::Error),
 }
 
-/// Runs the interactive TUI until the user quits.
-pub fn run(services: &mut Services) -> Result<(), TuiError> {
+/// How the TUI ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Finish {
+    Quit,
+    /// The user accepted the update; the terminal is already restored.
+    Update(String),
+}
+
+/// Runs the interactive TUI until the user quits or accepts an update.
+pub fn run(services: &mut Services) -> Result<Finish, TuiError> {
+    // Started before the terminal setup so the first draw never waits on it.
+    let updates = spawn_update_check(services);
     let mut session = TerminalSession::start()?;
     let mut app = App::new(session.picker.clone(), services);
-    event_loop(&mut session.terminal, &mut app, services)?;
-    Ok(())
+    Ok(event_loop(
+        &mut session.terminal,
+        &mut app,
+        services,
+        &updates,
+    )?)
+}
+
+/// Runs the update check on its own thread; any failure is a silent no-result.
+fn spawn_update_check(services: &Services) -> Receiver<UpdateStatus> {
+    let (tx, rx) = mpsc::channel();
+    if services.update.enabled {
+        let check = std::sync::Arc::clone(&services.update.check);
+        thread::spawn(move || {
+            let _ = tx.send(check(CheckOptions::AUTO));
+        });
+    }
+    rx
 }
 
 fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     services: &mut Services,
-) -> io::Result<()> {
+    updates: &Receiver<UpdateStatus>,
+) -> io::Result<Finish> {
     let mut last_tick = Instant::now();
     let mut redraw = true;
     loop {
@@ -47,8 +77,10 @@ fn event_loop(
         if event::poll(TICK)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if app.handle_key(key, services) == Outcome::Quit {
-                        return Ok(());
+                    match app.handle_key(key, services) {
+                        Outcome::Continue => {}
+                        Outcome::Quit => return Ok(Finish::Quit),
+                        Outcome::Update(version) => return Ok(Finish::Update(version)),
                     }
                     redraw = true;
                 }
@@ -56,6 +88,7 @@ fn event_loop(
                 _ => {}
             }
         }
+        redraw |= app.poll_update(updates);
         let now = Instant::now();
         redraw |= app.tick(now.duration_since(last_tick));
         last_tick = now;

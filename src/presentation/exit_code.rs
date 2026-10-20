@@ -9,6 +9,7 @@ pub enum Exit {
     Error,
     NotFound,
     Partial,
+    UpdateAvailable,
 }
 
 impl Exit {
@@ -18,6 +19,7 @@ impl Exit {
             Exit::Error => 1,
             Exit::NotFound => 2,
             Exit::Partial => 3,
+            Exit::UpdateAvailable => 10,
         }
     }
 
@@ -59,6 +61,7 @@ mod tests {
         assert_eq!(Exit::Error.code(), 1);
         assert_eq!(Exit::NotFound.code(), 2);
         assert_eq!(Exit::Partial.code(), 3);
+        assert_eq!(Exit::UpdateAvailable.code(), 10);
     }
 
     #[test]
