@@ -1,6 +1,8 @@
 use crate::application::apply::{ApplyOutcome, ApplyReport};
 use crate::application::current::CurrentCursor;
+use crate::application::install::InstallReport;
 use crate::domain::cursor::CursorTheme;
+use crate::domain::package::PackageInfo;
 
 pub const EMPTY_LIST_HINT: &str =
     "No cursor themes registered. Use `cursorswap add <PATH>` to register one.";
@@ -69,11 +71,42 @@ pub fn format_apply(report: &ApplyReport) -> String {
     out
 }
 
+/// yay-style listing: `repo/name version [installed]` plus an indented description.
+pub fn format_search(packages: &[PackageInfo], term: &str) -> String {
+    if packages.is_empty() {
+        return format!("No cursor themes found for {term:?}.\n");
+    }
+    let mut out = String::new();
+    for p in packages {
+        let marker = if p.installed { " [installed]" } else { "" };
+        out.push_str(&format!(
+            "{}/{} {}{marker}\n",
+            p.repository, p.name, p.version
+        ));
+        if !p.description.is_empty() {
+            out.push_str(&format!("    {}\n", p.description));
+        }
+    }
+    out
+}
+
+pub fn format_install(report: &InstallReport) -> String {
+    let mut out = format!("installed package {}\n", report.package);
+    for theme in &report.registered {
+        out.push_str(&format!("{}\n", format_added(theme)));
+    }
+    for skipped in &report.skipped {
+        out.push_str(&format!("skipped {} (already registered)\n", skipped.name));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::application::apply::ApplyEntry;
     use crate::application::fakes::theme;
+    use crate::application::install::SkippedTheme;
 
     #[test]
     fn list_marks_the_active_theme_and_dashes_missing_aliases() {
@@ -153,5 +186,56 @@ mod tests {
             entries: vec![entry("a", None), entry("b", None)],
         };
         assert!(format_apply(&report).ends_with("applied Nordzy: 2 of 2 steps succeeded\n"));
+    }
+
+    fn package(name: &str, description: &str, installed: bool) -> PackageInfo {
+        PackageInfo {
+            repository: "aur".into(),
+            name: name.into(),
+            version: "2.5.0-1".into(),
+            description: description.into(),
+            installed,
+        }
+    }
+
+    #[test]
+    fn search_lists_name_version_and_description() {
+        let packages = [
+            package("nordzy-cursors", "Nord cursors", false),
+            package("bibata", "Material cursors", true),
+        ];
+        assert_eq!(
+            format_search(&packages, "x"),
+            "aur/nordzy-cursors 2.5.0-1\n    Nord cursors\n\
+             aur/bibata 2.5.0-1 [installed]\n    Material cursors\n"
+        );
+    }
+
+    #[test]
+    fn search_omits_an_empty_description_line() {
+        let out = format_search(&[package("p", "", false)], "x");
+        assert_eq!(out, "aur/p 2.5.0-1\n");
+    }
+
+    #[test]
+    fn search_without_results_names_the_term() {
+        let out = format_search(&[], "nordzy");
+        assert_eq!(out, "No cursor themes found for \"nordzy\".\n");
+    }
+
+    #[test]
+    fn install_report_lists_added_and_skipped_themes() {
+        let report = InstallReport {
+            package: "pk".into(),
+            registered: vec![theme("Nordzy", Some("nz"))],
+            skipped: vec![SkippedTheme {
+                name: "Bibata".into(),
+                path: "/icons/Bibata".into(),
+            }],
+        };
+        assert_eq!(
+            format_install(&report),
+            "installed package pk\nadded Nordzy (alias nz)\nskipped Bibata (already registered)\n"
+        );
     }
 }

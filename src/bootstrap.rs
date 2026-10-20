@@ -11,8 +11,9 @@ use thiserror::Error;
 use crate::domain::ports::CursorApplier;
 use crate::infrastructure::{
     CommandRunner, EnvsConfCurrentProvider, FsThemeInspector, GsettingsApplier, GtkSettingsApplier,
-    HyprEnvsApplier, HyprctlApplier, IconPathApplier, SystemCommandRunner, TomlCursorRepository,
-    XcursorPreviewLoader, read_cursor_size, registry_path_from,
+    HyprEnvsApplier, HyprctlApplier, IconPathApplier, SystemCommandRunner, TerminalConfirm,
+    TomlCursorRepository, XcursorPreviewLoader, YayPackageManager, read_cursor_size,
+    registry_path_from,
 };
 use crate::presentation::Services;
 use crate::presentation::cli::{Cli, execute};
@@ -71,7 +72,7 @@ pub fn build_services<R: CommandRunner + Clone + 'static>(paths: &Paths, runner:
         Box::new(HyprEnvsApplier::new(paths.hypr_envs.clone())),
         Box::new(GtkSettingsApplier::new(paths.gtk_settings.clone())),
         Box::new(GsettingsApplier::new(runner.clone())),
-        Box::new(HyprctlApplier::new(runner, size)),
+        Box::new(HyprctlApplier::new(runner.clone(), size)),
     ];
     Services {
         repo: Box::new(TomlCursorRepository::new(paths.registry.clone())),
@@ -79,6 +80,9 @@ pub fn build_services<R: CommandRunner + Clone + 'static>(paths: &Paths, runner:
         current: Box::new(EnvsConfCurrentProvider::new(paths.hypr_envs.clone())),
         preview: Box::new(XcursorPreviewLoader::new()),
         appliers,
+        searcher: Box::new(YayPackageManager::new(runner.clone())),
+        packages: Box::new(YayPackageManager::new(runner)),
+        confirm: Box::new(TerminalConfirm),
     }
 }
 
@@ -246,5 +250,25 @@ mod tests {
             services.preview.load(&missing),
             Err(crate::domain::error::PreviewError::Unavailable(_))
         ));
+    }
+
+    #[test]
+    fn package_services_go_through_the_command_runner() {
+        let runner = FakeRunner::ok();
+        let services = build_services(&test_paths(), runner.clone());
+        services.searcher.search("cursor").unwrap();
+        services.packages.install("some-cursors").unwrap();
+        services.packages.installed_files("some-cursors").unwrap();
+        assert_eq!(
+            *runner.calls.borrow(),
+            [
+                vec!["yay", "-Ss", "cursor"],
+                vec!["pacman", "-Ql", "some-cursors"]
+            ]
+        );
+        assert_eq!(
+            *runner.interactive_calls.borrow(),
+            [vec!["yay", "-S", "some-cursors"]]
+        );
     }
 }
