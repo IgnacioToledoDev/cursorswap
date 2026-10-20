@@ -27,12 +27,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Check the tag against SemVer and Cargo.toml
+      - name: Check the tag against SemVer
         id: tag
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          sh scripts/release.sh verify-tag "$TAG" > tag-info.txt
+          sh scripts/release.sh check-tag "$TAG" > tag-info.txt
           cat tag-info.txt
           cat tag-info.txt >> "$GITHUB_OUTPUT"
           rm tag-info.txt
@@ -55,12 +55,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Apply the tag version to Cargo.toml and Cargo.lock
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          # Runner-only: the bump is never committed or pushed (main is protected).
+          if [ "$(sh scripts/release.sh cargo-version)" != "$VERSION" ]; then
+            sh scripts/release.sh bump "$VERSION"
+          fi
+          cargo update --workspace
+          grep -q "^version = \"${VERSION}\"$" Cargo.toml
       - name: Run tests
         run: cargo test --locked --all-targets
 
   build:
     name: Build
-    needs: test
+    needs: [validate, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,8 +78,31 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
+      - name: Apply the tag version to Cargo.toml and Cargo.lock
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          # Runner-only: the bump is never committed or pushed (main is protected).
+          if [ "$(sh scripts/release.sh cargo-version)" != "$VERSION" ]; then
+            sh scripts/release.sh bump "$VERSION"
+          fi
+          cargo update --workspace
+          grep -q "^version = \"${VERSION}\"$" Cargo.toml
       - name: Build
         run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+      - name: Check the binary reports the tag version
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          reported=$(target/x86_64-unknown-linux-gnu/release/cursorswap --version)
+          echo "$reported"
+          case $reported in
+            *" ${VERSION}") ;;
+            *)
+              echo "::error::binary reports '${reported}', expected version ${VERSION}" >&2
+              exit 1
+              ;;
+          esac
       - name: Stage assets and checksum
         run: |
           mkdir dist
