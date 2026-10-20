@@ -1,7 +1,9 @@
+use std::ffi::OsString;
 use std::path::Path;
 
 use super::cursor::CursorTheme;
-use super::error::{ApplyError, CurrentCursorError, PreviewError, RepositoryError};
+use super::error::{ApplyError, CurrentCursorError, PreviewError, RepositoryError, UpdateError};
+use super::update::{InstallMethod, ReleaseInfo, UpdateState};
 
 pub trait CursorRepository {
     fn list(&self) -> Result<Vec<CursorTheme>, RepositoryError>;
@@ -40,4 +42,36 @@ pub trait ThemeInspector {
 /// Reports the name of the cursor theme that is currently active.
 pub trait CurrentCursorProvider {
     fn current_name(&self) -> Result<Option<String>, CurrentCursorError>;
+}
+
+/// Finds the latest stable release.
+pub trait ReleaseSource {
+    fn latest_stable(&self) -> Result<ReleaseInfo, UpdateError>;
+}
+
+/// Persists what the update check remembers. Loading never fails: missing or
+/// unreadable data reads as the default state.
+pub trait UpdateStateStore {
+    fn load(&self) -> UpdateState;
+    fn save(&self, state: &UpdateState) -> Result<(), UpdateError>;
+}
+
+/// Downloads a release, verifies its checksum and replaces the running binary.
+/// Any failure leaves the existing binary untouched.
+pub trait BinaryInstaller {
+    fn install(&self, release: &ReleaseInfo) -> Result<(), UpdateError>;
+}
+
+pub trait InstallMethodDetector {
+    fn detect(&self) -> InstallMethod;
+}
+
+/// Replaces the current process with the installed binary. On success it does
+/// not return in production; an `Err` means the restart failed.
+pub trait Relauncher {
+    fn relaunch(&self, args: &[OsString]) -> Result<(), UpdateError>;
+}
+
+pub trait Clock {
+    fn now_secs(&self) -> u64;
 }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::error::DomainError;
 
-pub const RESERVED_WORDS: [&str; 4] = ["list", "add", "remove", "current"];
+pub const RESERVED_WORDS: [&str; 5] = ["list", "add", "remove", "current", "update"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alias(String);
@@ -136,7 +136,7 @@ mod alias_tests {
 
     #[test]
     fn rejects_reserved_words_in_any_case() {
-        for word in ["list", "ADD", "Remove", "cUrRent"] {
+        for word in ["list", "ADD", "Remove", "cUrRent", "UPDATE"] {
             assert!(
                 matches!(
                     Alias::new_checked(word, &RESERVED_WORDS),

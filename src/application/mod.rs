@@ -4,6 +4,7 @@ pub mod current;
 pub mod error;
 pub mod list;
 pub mod remove;
+pub mod update;
 
 #[cfg(test)]
 pub(crate) mod fakes;
