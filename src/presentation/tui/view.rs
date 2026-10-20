@@ -37,9 +37,13 @@ fn areas(area: Rect) -> Areas {
     }
 }
 
-/// Cell size available to the preview image inside its bordered pane.
+/// Cell size requested for the preview image: half of the bordered pane interior.
 pub fn preview_size(area: Rect) -> Size {
-    Block::bordered().inner(areas(area).preview).as_size()
+    half(Block::bordered().inner(areas(area).preview).as_size())
+}
+
+fn half(size: Size) -> Size {
+    Size::new(size.width.div_ceil(2), size.height.div_ceil(2))
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
@@ -325,9 +329,18 @@ mod tests {
     }
 
     #[test]
-    fn preview_size_is_the_bordered_pane_interior() {
+    fn preview_size_is_half_of_the_bordered_pane_interior() {
         let size = preview_size(Rect::new(0, 0, 100, 20));
-        assert_eq!(size, Size::new(58, 16));
+        assert_eq!(size, Size::new(29, 8));
         assert_eq!(preview_size(Rect::new(0, 0, 1, 1)), Size::new(0, 0));
+    }
+
+    #[test]
+    fn half_rounds_up_so_a_non_empty_pane_never_collapses() {
+        assert_eq!(half(Size::new(58, 16)), Size::new(29, 8));
+        assert_eq!(half(Size::new(57, 15)), Size::new(29, 8));
+        assert_eq!(half(Size::new(1, 1)), Size::new(1, 1));
+        assert_eq!(half(Size::new(0, 0)), Size::new(0, 0));
+        assert_eq!(half(Size::new(1, 0)), Size::new(1, 0));
     }
 }
