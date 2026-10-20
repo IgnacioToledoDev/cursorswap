@@ -112,15 +112,16 @@ rm "$FAKE/Cargo.toml"
 in_fake cargo-version
 if [ "$rc" -ne 0 ]; then pass "cargo-version fails without Cargo.toml"; else fail "cargo-version fails without Cargo.toml"; fi
 
-# verify-tag
-write_cargo 0.2.0-rc.1
-in_fake verify-tag v0.2.0-rc.1
-if [ "$rc" -eq 0 ] && expect_out "version=0.2.0-rc.1
-prerelease=true"; then pass "verify-tag accepts a matching tag"; else fail "verify-tag accepts a matching tag"; fi
+# verify-tag was removed: the tag, not Cargo.toml, defines the release version
+write_cargo 0.2.0
 in_fake verify-tag v0.2.0
-if [ "$rc" -ne 0 ] && grep -q 'does not match' "$ERR" && [ ! -s "$OUT" ]; then pass "verify-tag rejects a mismatch"; else fail "verify-tag rejects a mismatch"; fi
-in_fake verify-tag 0.2.0-rc.1
-if [ "$rc" -ne 0 ]; then pass "verify-tag rejects an invalid tag"; else fail "verify-tag rejects an invalid tag"; fi
+if [ "$rc" -eq 2 ] && grep -q 'unknown command' "$ERR" && [ ! -s "$OUT" ]; then pass "verify-tag is no longer a command"; else fail "verify-tag is no longer a command"; fi
+run --help
+if ! grep -q 'verify-tag' "$OUT"; then pass "--help does not mention verify-tag"; else fail "--help does not mention verify-tag"; fi
+# check-tag does not depend on Cargo.toml: a tag ahead of it is valid
+in_fake check-tag v0.3.0
+if [ "$rc" -eq 0 ] && expect_out "version=0.3.0
+prerelease=false"; then pass "check-tag ignores the Cargo.toml version"; else fail "check-tag ignores the Cargo.toml version"; fi
 
 # bump
 write_cargo 0.1.0

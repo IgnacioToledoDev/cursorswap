@@ -1,5 +1,6 @@
 #!/bin/sh
 # Release helper: SemVer validation for release tags and Cargo.toml version bumps.
+# The tag defines the release version; CI bumps Cargo.toml from it inside the runner.
 # Pure logic, no network. Run from the repository root.
 set -eu
 
@@ -17,7 +18,6 @@ Usage: release.sh <command> [argument]
 Commands:
   check-tag <tag>       validate a release tag (vX.Y.Z[-pre]); print version= and prerelease=
   cargo-version         print the package version from ./Cargo.toml
-  verify-tag <tag>      check-tag, then require the tag to match ./Cargo.toml
   bump <version>        set the package version in ./Cargo.toml (no leading "v")
   -h, --help            show this help
 USAGE
@@ -83,14 +83,6 @@ case $cmd in
   cargo-version)
     need_arg "$(($# + 1))"
     cargo_version
-    ;;
-  verify-tag)
-    need_arg "$#"
-    tag_version "$1"
-    current=$(cargo_version)
-    [ "$VERSION" = "$current" ] ||
-      die "tag $1 does not match Cargo.toml version $current"
-    print_tag_info
     ;;
   bump)
     need_arg "$#"
