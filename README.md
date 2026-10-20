@@ -33,6 +33,37 @@ cursorswap                  # browse themes with a live preview
 
 ## Installation
 
+There are no prebuilt releases yet, so the installer builds from source with Cargo. You need a Rust toolchain ([rustup.rs](https://rustup.rs)) and `git`.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/IgnacioToledoDev/cursorswap/main/install.sh | sh
+```
+
+This installs `cursorswap` into `~/.local/bin`. Running it again upgrades to the latest `main`. The script never uses `sudo` and writes only inside the install prefix. If `~/.local/bin` is not in your `PATH`, it prints the line to add.
+
+Piping a script into a shell runs whatever the server sends. If you prefer to check it first, download, read, then run:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/IgnacioToledoDev/cursorswap/main/install.sh
+less install.sh
+sh install.sh
+```
+
+To pass options through the one-liner, use `sh -s --`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/IgnacioToledoDev/cursorswap/main/install.sh | sh -s -- --prefix "$HOME/.cargo"
+```
+
+| Option | Description |
+|--------|-------------|
+| `--prefix DIR` | Install to `DIR/bin/cursorswap` (default: `~/.local`) |
+| `--from-path DIR` | Install from a local checkout instead of GitHub |
+| `--ref REF` | Install a branch or tag from GitHub (`v1.2.3` style names are tags) |
+| `-h`, `--help` | Show help |
+
+### Manual build
+
 From a clone of this repository:
 
 ```sh
@@ -54,14 +85,28 @@ If you like a shorter command, add an alias to your shell config:
 alias cc=cursorswap
 ```
 
-### Uninstall
+## Uninstall
 
 ```sh
-cargo uninstall cursorswap
-rm -r ~/.config/cursorswap       # optional: removes your registry
+curl -fsSL https://raw.githubusercontent.com/IgnacioToledoDev/cursorswap/main/uninstall.sh | sh
 ```
 
-Symlinks that `cursorswap` created in `~/.local/share/icons` are never deleted automatically; remove them by hand if you want to.
+Or download and read it first, as above (`uninstall.sh`). Options:
+
+| Option | Description |
+|--------|-------------|
+| `--prefix DIR` | Prefix the binary was installed into (default: `~/.local`) |
+| `--purge-config` | Also remove `~/.config/cursorswap` (your registry) without asking |
+| `--keep-config` | Keep the config without asking |
+| `-h`, `--help` | Show help |
+
+What it does:
+
+- Removes the `cursorswap` binary from the prefix (through `cargo uninstall` when available) and nothing else in it.
+- Asks before removing `~/.config/cursorswap`, defaulting to No. When it has no terminal (for example when piped from `curl`), it keeps the config and tells you; pass `--purge-config` to remove it.
+- Running it again is safe.
+
+What it does not do: it never deletes theme directories or the symlinks `cursorswap` created in `~/.local/share/icons`. It lists the symlinks that point to themes in your registry, with the `rm` command for each, so you can remove them by hand. If you installed with plain `cargo install` into `~/.cargo`, use `cargo uninstall cursorswap`, or pass `--prefix "$HOME/.cargo"`.
 
 ## Quick start
 
