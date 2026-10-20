@@ -49,6 +49,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: ShellCheck
-        run: shellcheck install.sh uninstall.sh tests/scripts/*.sh
+        run: shellcheck install.sh uninstall.sh scripts/*.sh tests/scripts/*.sh
+      - name: Release script tests
+        run: sh tests/scripts/release_test.sh
       - name: Smoke test
         run: sh tests/scripts/install_smoke.sh
