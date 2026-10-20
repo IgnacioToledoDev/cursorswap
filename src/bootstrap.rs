@@ -12,7 +12,7 @@ use crate::domain::ports::CursorApplier;
 use crate::infrastructure::{
     CommandRunner, EnvsConfCurrentProvider, FsThemeInspector, GsettingsApplier, GtkSettingsApplier,
     HyprEnvsApplier, HyprctlApplier, IconPathApplier, SystemCommandRunner, TomlCursorRepository,
-    read_cursor_size, registry_path_from,
+    XcursorPreviewLoader, read_cursor_size, registry_path_from,
 };
 use crate::presentation::Services;
 use crate::presentation::cli::{Cli, execute};
@@ -77,6 +77,7 @@ pub fn build_services<R: CommandRunner + Clone + 'static>(paths: &Paths, runner:
         repo: Box::new(TomlCursorRepository::new(paths.registry.clone())),
         inspector: Box::new(FsThemeInspector),
         current: Box::new(EnvsConfCurrentProvider::new(paths.hypr_envs.clone())),
+        preview: Box::new(XcursorPreviewLoader::new()),
         appliers,
     }
 }
@@ -232,5 +233,18 @@ mod tests {
             *runner.calls.borrow(),
             [["hyprctl", "setcursor", "Nordzy", "40"]]
         );
+    }
+
+    #[test]
+    fn services_carry_the_real_preview_loader() {
+        let services = build_services(&test_paths(), FakeRunner::ok());
+        let missing =
+            crate::domain::cursor::CursorTheme::new("Ghost", None, p("/nonexistent/Ghost"))
+                .unwrap();
+        // The Xcursor loader reports a missing cursors directory as unavailable.
+        assert!(matches!(
+            services.preview.load(&missing),
+            Err(crate::domain::error::PreviewError::Unavailable(_))
+        ));
     }
 }

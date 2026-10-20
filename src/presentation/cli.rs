@@ -221,7 +221,7 @@ mod parse_tests {
 mod execute_tests {
     use super::*;
     use crate::application::fakes::{
-        CallLog, FakeCurrent, FakeInspector, FakeRepository, applier, theme,
+        CallLog, FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, applier, theme,
     };
 
     struct Run {
@@ -250,6 +250,7 @@ mod execute_tests {
                 name: Some("Dir".to_string()),
             }),
             current: Box::new(FakeCurrent(Ok(current.map(String::from)))),
+            preview: Box::new(FakePreviewLoader::failing("no preview in cli tests")),
             appliers,
         };
         let cli = Cli::try_parse_from(std::iter::once("cambia-cursor").chain(args.iter().copied()))

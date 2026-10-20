@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::domain::cursor::{Alias, CursorTheme};
-use crate::domain::error::{ApplyError, CurrentCursorError, RepositoryError};
+use crate::domain::error::{ApplyError, CurrentCursorError, PreviewError, RepositoryError};
 use crate::domain::ports::{
-    CurrentCursorProvider, CursorApplier, CursorRepository, ThemeInspector,
+    CurrentCursorProvider, CursorApplier, CursorRepository, Preview, PreviewLoader, ThemeInspector,
 };
 
 pub fn theme(name: &str, alias: Option<&str>) -> CursorTheme {
@@ -123,5 +123,34 @@ pub struct FakeCurrent(pub Result<Option<String>, String>);
 impl CurrentCursorProvider for FakeCurrent {
     fn current_name(&self) -> Result<Option<String>, CurrentCursorError> {
         self.0.clone().map_err(CurrentCursorError::Unavailable)
+    }
+}
+
+/// Preview loader that records every requested theme path.
+pub struct FakePreviewLoader {
+    result: Result<Preview, String>,
+    pub loads: Rc<RefCell<Vec<PathBuf>>>,
+}
+
+impl FakePreviewLoader {
+    pub fn returning(preview: Preview) -> Self {
+        FakePreviewLoader {
+            result: Ok(preview),
+            loads: Rc::default(),
+        }
+    }
+
+    pub fn failing(message: &str) -> Self {
+        FakePreviewLoader {
+            result: Err(message.to_string()),
+            loads: Rc::default(),
+        }
+    }
+}
+
+impl PreviewLoader for FakePreviewLoader {
+    fn load(&self, theme: &CursorTheme) -> Result<Preview, PreviewError> {
+        self.loads.borrow_mut().push(theme.path.clone());
+        self.result.clone().map_err(PreviewError::Unavailable)
     }
 }
