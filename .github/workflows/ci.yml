@@ -40,3 +40,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --locked --all-targets
+
+  scripts:
+    name: Install scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: ShellCheck
+        run: shellcheck install.sh uninstall.sh tests/scripts/*.sh
+      - name: Smoke test
+        run: sh tests/scripts/install_smoke.sh
