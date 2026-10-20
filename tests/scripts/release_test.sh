@@ -51,7 +51,7 @@ TOML
 }
 in_fake() { (cd "$FAKE" && sh "$REL" "$@") >"$OUT" 2>"$ERR"; rc=$?; }
 
-[ -x "$REL" ] && pass "release.sh is executable" || fail "release.sh is executable"
+if [ -x "$REL" ]; then pass "release.sh is executable"; else fail "release.sh is executable"; fi
 
 # check-tag: valid tags
 valid() { # valid <tag> <prerelease>
@@ -91,6 +91,8 @@ invalid v1.0.0-rc.1+build
 invalid "v1.0.0 "
 invalid " v1.0.0"
 invalid 'v1.0.0;rm'
+# The literal $(id) is the test input: it must be rejected, never expanded.
+# shellcheck disable=SC2016
 invalid 'v1.0.0$(id)'
 invalid "v1.0.0
 v2.0.0"
@@ -100,7 +102,7 @@ invalid vlatest
 run check-tag 'v1.0.0+build'
 if grep -qi 'build metadata' "$ERR"; then pass "build metadata rejection is explained"; else fail "build metadata rejection is explained"; fi
 run check-tag
-[ "$rc" -eq 2 ] && pass "check-tag without argument exits 2" || fail "check-tag without argument exits 2"
+if [ "$rc" -eq 2 ]; then pass "check-tag without argument exits 2"; else fail "check-tag without argument exits 2"; fi
 
 # cargo-version
 write_cargo 0.1.0
@@ -108,7 +110,7 @@ in_fake cargo-version
 if [ "$rc" -eq 0 ] && expect_out "0.1.0"; then pass "cargo-version prints the package version"; else fail "cargo-version prints the package version"; fi
 rm "$FAKE/Cargo.toml"
 in_fake cargo-version
-[ "$rc" -ne 0 ] && pass "cargo-version fails without Cargo.toml" || fail "cargo-version fails without Cargo.toml"
+if [ "$rc" -ne 0 ]; then pass "cargo-version fails without Cargo.toml"; else fail "cargo-version fails without Cargo.toml"; fi
 
 # verify-tag
 write_cargo 0.2.0-rc.1
@@ -118,7 +120,7 @@ prerelease=true"; then pass "verify-tag accepts a matching tag"; else fail "veri
 in_fake verify-tag v0.2.0
 if [ "$rc" -ne 0 ] && grep -q 'does not match' "$ERR" && [ ! -s "$OUT" ]; then pass "verify-tag rejects a mismatch"; else fail "verify-tag rejects a mismatch"; fi
 in_fake verify-tag 0.2.0-rc.1
-[ "$rc" -ne 0 ] && pass "verify-tag rejects an invalid tag" || fail "verify-tag rejects an invalid tag"
+if [ "$rc" -ne 0 ]; then pass "verify-tag rejects an invalid tag"; else fail "verify-tag rejects an invalid tag"; fi
 
 # bump
 write_cargo 0.1.0
@@ -134,7 +136,7 @@ if [ "$rc" -eq 0 ] && grep -q '0\.1\.0' "$OUT" && grep -q '0\.2\.0' "$OUT" \
 else fail "bump rewrites only the package version line"; fi
 
 in_fake bump 0.2.0
-[ "$rc" -ne 0 ] && grep -q '^error:' "$ERR" && pass "bump refuses the same version" || fail "bump refuses the same version"
+if [ "$rc" -ne 0 ] && grep -q '^error:' "$ERR"; then pass "bump refuses the same version"; else fail "bump refuses the same version"; fi
 
 bump_refused() { # bump_refused <version>
   write_cargo 0.1.0
@@ -161,17 +163,17 @@ EMPTY="$SB/empty"
 mkdir -p "$EMPTY"
 (cd "$EMPTY" && sh "$REL" bump 0.2.0) >"$OUT" 2>"$ERR"
 rc=$?
-[ "$rc" -ne 0 ] && [ ! -e "$EMPTY/Cargo.toml" ] && pass "bump fails without Cargo.toml" || fail "bump fails without Cargo.toml"
+if [ "$rc" -ne 0 ] && [ ! -e "$EMPTY/Cargo.toml" ]; then pass "bump fails without Cargo.toml"; else fail "bump fails without Cargo.toml"; fi
 
 # usage
 run --help
 if [ "$rc" -eq 0 ] && grep -q 'check-tag' "$OUT" && grep -q 'bump' "$OUT"; then pass "--help"; else fail "--help"; fi
 run -h
-[ "$rc" -eq 0 ] && pass "-h" || fail "-h"
+if [ "$rc" -eq 0 ]; then pass "-h"; else fail "-h"; fi
 run frobnicate
 if [ "$rc" -eq 2 ] && grep -q -i 'usage' "$ERR"; then pass "unknown subcommand exits 2"; else fail "unknown subcommand exits 2"; fi
 run
-[ "$rc" -eq 2 ] && pass "no subcommand exits 2" || fail "no subcommand exits 2"
+if [ "$rc" -eq 2 ]; then pass "no subcommand exits 2"; else fail "no subcommand exits 2"; fi
 
 if [ "$failures" -eq 0 ]; then
   echo "all release script checks passed"
