@@ -371,7 +371,7 @@ The Release workflow then:
 1. validates the tag as SemVer (a stable tag must point to a commit already on `main`; pre-release tags may come from any branch);
 2. applies the tag version to `Cargo.toml` and `Cargo.lock` inside the CI runner only, then runs the tests;
 3. builds the binary and checks that `cursorswap --version` reports the tag version;
-4. publishes the binary with its checksum and generated release notes.
+4. publishes the binary with its checksum and generated release notes. If a release for the tag already exists (for example one created from the GitHub UI), it keeps that release and its notes, attaches the binary and checksum, and sets its pre-release/latest channel from the tag.
 
 Nothing is pushed back to `main`, which is protected. The `Cargo.toml` version on `main` may therefore lag the latest release; the released binary always carries the tag version. Update `Cargo.toml` and `Cargo.lock` by pull request whenever you want `main` to catch up.
 
