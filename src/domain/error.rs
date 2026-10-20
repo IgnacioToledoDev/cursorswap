@@ -47,3 +47,9 @@ pub enum PreviewError {
     #[error("io failure: {0}")]
     Io(String),
 }
+
+#[derive(Debug, Error)]
+pub enum CurrentCursorError {
+    #[error("could not determine the active cursor: {0}")]
+    Unavailable(String),
+}
