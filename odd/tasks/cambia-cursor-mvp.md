@@ -45,7 +45,11 @@ Route legend: D = delegated writer, I = inline. Trigger evidence: writer trigger
   - Native review: assessed high (same `src/main.rs` process signal, 663 lines vs boundary `c569ce9`), user granted again, 4 lenses approved, acknowledged, authority burned. Reviewed boundary now `a2f253d`.
   - Advisory (non-blocking, not reopened): WARNINGs `apply.rs:32-44` (R3-001) and `apply.rs:38-39` (R4-001) on the applier-loop path, `add.rs:22-25` (R2-001); SUGGESTIONs R2-002, R2-003, R2-004, R3-002, R4-002. Revisit `apply.rs` ones when wiring T6.
   - Slice S1 (T1, T2) complete on `feat/cambia-cursor-domain-app`. No merge/push done (user decision). S2 is cut from the S1 tip so it can use this code.
-- [ ] T3 (D) Infra `registry_toml` repository. Tests: roundtrip, missing file, duplicate, tempdir.
+- [x] T3 (D) Infra `registry_toml` repository + `FsThemeInspector`. Tests: roundtrip, missing file, duplicate, tempdir.
+  - Commit `049f509` on `feat/cambia-cursor-infra`. Writer RED 0/9 (inspector) and 0/16 (registry) with stubs, GREEN 9/9 and 16/16. Parent spot check: `cargo test` 77 passed. Writer: clippy `-D warnings` and `fmt --check` clean. Deps added: serde, toml, tempfile (dev).
+  - Native review: assessed high (same `src/main.rs` signal, 684 lines vs boundary `a2f253d`), user granted a third time, 4 lenses approved, acknowledged, authority burned. Reviewed boundary now `049f509`.
+  - Advisory (non-blocking, not reopened), all in `registry_toml.rs`: WARNINGs R2-001 (124-141), R3-001 (126), R4-001 (90-98, atomic temp write), R4-002 (98, rename step); SUGGESTIONs R3-002, R3-003, R3-004, R4-003. Candidate hardening for T4 since appliers reuse the same atomic-write pattern.
+  - Cleanup owed in T6: remove `#[allow(unused_imports)]` in `infrastructure/mod.rs` and the crate-wide `dead_code` allow once wired.
 - [ ] T4 (D) Infra appliers `hyprctl`, `hypr_envs`, `gtk_settings`, `gsettings` + icon-path symlink. Tests: tempdir rewrite preserves other lines; command runner faked.
 - [ ] T5 (D) Infra `xcursor_preview` (frames of `left_ptr`, animation). Tests: small Xcursor fixture.
 - [ ] T6 (D) Presentation CLI (clap) + `main.rs` composition root + exit codes. Tests: clap parsing, exit-code mapping.
