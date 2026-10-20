@@ -16,6 +16,7 @@ use crate::application::apply::{ApplyOutcome, ApplyReport, ApplyStatus};
 use crate::application::update::{UpdateStatus, skip_version};
 use crate::application::{add, apply, list, remove};
 use crate::domain::cursor::CursorTheme;
+use crate::domain::ports::CursorState;
 use crate::domain::update::update_hint;
 use crate::presentation::Services;
 
@@ -41,6 +42,8 @@ pub struct App {
     pub selected: usize,
     pub active: Option<String>,
     pub mode: Mode,
+    /// The cursor state previewed for whichever theme is selected.
+    pub state: CursorState,
     pub input: String,
     pub status: String,
     /// The newer version offered by the background check, until answered.
@@ -58,6 +61,7 @@ impl App {
             selected: 0,
             active: None,
             mode: Mode::Browse,
+            state: CursorState::Default,
             input: String::new(),
             status: String::new(),
             update_offer: None,
@@ -82,7 +86,7 @@ impl App {
     }
 
     pub fn selected_preview(&self) -> Option<&PreviewEntry> {
-        self.previews.get(&self.selected_theme()?.path)
+        self.previews.get(&self.selected_theme()?.path, self.state)
     }
 
     pub fn current_protocol(&self) -> Option<&Protocol> {
@@ -97,7 +101,7 @@ impl App {
         let Some(path) = self.themes.get(self.selected).map(|t| t.path.clone()) else {
             return;
         };
-        if let Some(PreviewEntry::Loaded(loaded)) = self.previews.get_mut(&path) {
+        if let Some(PreviewEntry::Loaded(loaded)) = self.previews.get_mut(&path, self.state) {
             loaded.prepare(&self.picker, size);
         }
     }
@@ -107,7 +111,7 @@ impl App {
         let Some(path) = self.themes.get(self.selected).map(|t| t.path.clone()) else {
             return false;
         };
-        match self.previews.get_mut(&path) {
+        match self.previews.get_mut(&path, self.state) {
             Some(PreviewEntry::Loaded(loaded)) => loaded.tick(elapsed),
             _ => false,
         }
@@ -194,6 +198,8 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.select(self.selected.saturating_sub(1), services)
             }
+            KeyCode::Char(']') => self.select_state(self.state.next(), services),
+            KeyCode::Char('[') => self.select_state(self.state.prev(), services),
             KeyCode::Enter => self.apply_selected(services),
             KeyCode::Char('a') => {
                 self.mode = Mode::PathInput;
@@ -238,9 +244,15 @@ impl App {
         self.load_selected_preview(services);
     }
 
+    fn select_state(&mut self, state: CursorState, services: &Services) {
+        self.state = state;
+        self.load_selected_preview(services);
+    }
+
     fn load_selected_preview(&mut self, services: &Services) {
         if let Some(theme) = self.themes.get(self.selected) {
-            self.previews.ensure(theme, services.preview.as_ref());
+            self.previews
+                .ensure(theme, self.state, services.preview.as_ref());
         }
     }
 
@@ -365,13 +377,14 @@ mod tests {
     use crate::application::fakes::{
         CallLog, FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, applier, theme,
     };
-    use crate::domain::ports::{Preview, PreviewFrame};
+    use crate::domain::ports::{CursorState, Preview, PreviewFrame};
 
     struct Harness {
         app: App,
         services: Services,
         calls: CallLog,
         loads: Rc<RefCell<Vec<PathBuf>>>,
+        loads_states: Rc<RefCell<Vec<CursorState>>>,
     }
 
     fn one_frame() -> Preview {
@@ -393,6 +406,7 @@ mod tests {
     ) -> Harness {
         let calls = CallLog::default();
         let loads = Rc::clone(&loader.loads);
+        let loads_states = Rc::clone(&loader.states);
         let appliers = failing_appliers
             .iter()
             .enumerate()
@@ -419,6 +433,7 @@ mod tests {
             services,
             calls,
             loads,
+            loads_states,
         }
     }
 
@@ -786,6 +801,115 @@ mod tests {
         );
         assert!(!h.app.tick(Duration::from_millis(50)));
         assert!(h.app.tick(Duration::from_millis(60)));
+    }
+
+    // --- cursor states ---
+
+    fn harness_lacking(state: CursorState) -> Harness {
+        harness_with(
+            FakeRepository::with(two_themes()),
+            &[false],
+            None,
+            FakePreviewLoader::lacking(one_frame(), state),
+        )
+    }
+
+    fn requested_states(h: &Harness) -> Vec<CursorState> {
+        h.loads_states.borrow().clone()
+    }
+
+    #[test]
+    fn the_default_state_is_selected_at_startup() {
+        let h = harness(two_themes());
+        assert_eq!(h.app.state, CursorState::Default);
+        assert_eq!(requested_states(&h), [CursorState::Default]);
+    }
+
+    #[test]
+    fn right_bracket_selects_the_next_state_and_loads_it_lazily() {
+        let mut h = harness(two_themes());
+        ch(&mut h, ']');
+        assert_eq!(h.app.state, CursorState::Pointer);
+        assert_eq!(
+            requested_states(&h),
+            [CursorState::Default, CursorState::Pointer]
+        );
+        assert!(matches!(
+            h.app.selected_preview(),
+            Some(PreviewEntry::Loaded(_))
+        ));
+    }
+
+    #[test]
+    fn left_bracket_wraps_to_the_last_state() {
+        let mut h = harness(two_themes());
+        ch(&mut h, '[');
+        assert_eq!(h.app.state, CursorState::EwResize);
+        ch(&mut h, ']');
+        assert_eq!(h.app.state, CursorState::Default);
+    }
+
+    #[test]
+    fn revisiting_a_state_does_not_reload_it() {
+        let mut h = harness(two_themes());
+        ch(&mut h, ']');
+        ch(&mut h, '[');
+        ch(&mut h, ']');
+        assert_eq!(h.loads.borrow().len(), 2);
+    }
+
+    #[test]
+    fn the_selected_state_persists_when_moving_to_another_theme() {
+        let mut h = harness(two_themes());
+        ch(&mut h, ']');
+        ch(&mut h, 'j');
+        assert_eq!(h.app.state, CursorState::Pointer);
+        assert_eq!(
+            requested_states(&h).last().copied(),
+            Some(CursorState::Pointer)
+        );
+        assert_eq!(
+            h.loads.borrow().last(),
+            Some(&PathBuf::from("/icons/Bibata"))
+        );
+    }
+
+    #[test]
+    fn a_missing_state_is_a_failed_entry_and_keeps_everything_working() {
+        let mut h = harness_lacking(CursorState::Pointer);
+        ch(&mut h, ']');
+        assert!(matches!(
+            h.app.selected_preview(),
+            Some(PreviewEntry::Failed(_))
+        ));
+        assert!(h.app.current_protocol().is_none());
+        h.app.prepare_preview(Size::new(10, 5));
+        assert!(!h.app.tick(Duration::from_secs(1)));
+        ch(&mut h, 'j');
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(*h.calls.borrow(), ["alpha:Bibata"]);
+        ch(&mut h, ']');
+        assert_eq!(h.app.state, CursorState::Text);
+        assert!(matches!(
+            h.app.selected_preview(),
+            Some(PreviewEntry::Loaded(_))
+        ));
+    }
+
+    #[test]
+    fn the_state_keys_are_text_while_typing_a_prompt() {
+        let mut h = harness(two_themes());
+        ch(&mut h, 'a');
+        ch(&mut h, ']');
+        assert_eq!(h.app.input, "]");
+        assert_eq!(h.app.state, CursorState::Default);
+    }
+
+    #[test]
+    fn the_state_keys_do_nothing_without_themes() {
+        let mut h = harness(vec![]);
+        ch(&mut h, ']');
+        assert!(h.loads.borrow().is_empty());
     }
 
     // --- apply ---

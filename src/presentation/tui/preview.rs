@@ -12,7 +12,7 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 
 use crate::domain::cursor::CursorTheme;
-use crate::domain::ports::{Preview, PreviewFrame, PreviewLoader};
+use crate::domain::ports::{CursorState, Preview, PreviewFrame, PreviewLoader};
 
 /// Frame delays below this are raised to it so a zero delay cannot busy-loop.
 pub const MIN_FRAME_DELAY_MS: u32 = 30;
@@ -159,33 +159,34 @@ pub enum PreviewEntry {
     Failed(String),
 }
 
-/// Loads each theme's preview at most once, caching failures too.
+/// Loads each (theme, state) preview at most once, caching failures too.
 #[derive(Default)]
 pub struct PreviewCache {
-    entries: HashMap<PathBuf, PreviewEntry>,
+    entries: HashMap<(PathBuf, CursorState), PreviewEntry>,
 }
 
 impl PreviewCache {
-    pub fn ensure(&mut self, theme: &CursorTheme, loader: &dyn PreviewLoader) {
-        if self.entries.contains_key(&theme.path) {
+    pub fn ensure(&mut self, theme: &CursorTheme, state: CursorState, loader: &dyn PreviewLoader) {
+        let key = (theme.path.clone(), state);
+        if self.entries.contains_key(&key) {
             return;
         }
-        let entry = match loader.load(theme) {
+        let entry = match loader.load_state(theme, state) {
             Ok(preview) => match LoadedPreview::from_preview(&preview) {
                 Ok(loaded) => PreviewEntry::Loaded(loaded),
                 Err(message) => PreviewEntry::Failed(message),
             },
             Err(err) => PreviewEntry::Failed(err.to_string()),
         };
-        self.entries.insert(theme.path.clone(), entry);
+        self.entries.insert(key, entry);
     }
 
-    pub fn get(&self, path: &Path) -> Option<&PreviewEntry> {
-        self.entries.get(path)
+    pub fn get(&self, path: &Path, state: CursorState) -> Option<&PreviewEntry> {
+        self.entries.get(&(path.to_path_buf(), state))
     }
 
-    pub fn get_mut(&mut self, path: &Path) -> Option<&mut PreviewEntry> {
-        self.entries.get_mut(path)
+    pub fn get_mut(&mut self, path: &Path, state: CursorState) -> Option<&mut PreviewEntry> {
+        self.entries.get_mut(&(path.to_path_buf(), state))
     }
 }
 
@@ -395,15 +396,20 @@ mod tests {
 
     // --- cache ---
 
+    const D: CursorState = CursorState::Default;
+
     #[test]
     fn each_theme_is_loaded_once() {
         let loader = FakePreviewLoader::returning(preview(vec![frame(2, 0, [255; 4])]));
         let mut cache = PreviewCache::default();
         let a = theme("a", None);
-        cache.ensure(&a, &loader);
-        cache.ensure(&a, &loader);
+        cache.ensure(&a, D, &loader);
+        cache.ensure(&a, D, &loader);
         assert_eq!(loader.loads.borrow().len(), 1);
-        assert!(matches!(cache.get(&a.path), Some(PreviewEntry::Loaded(_))));
+        assert!(matches!(
+            cache.get(&a.path, D),
+            Some(PreviewEntry::Loaded(_))
+        ));
     }
 
     #[test]
@@ -411,11 +417,11 @@ mod tests {
         let loader = FakePreviewLoader::failing("broken");
         let mut cache = PreviewCache::default();
         let a = theme("a", None);
-        cache.ensure(&a, &loader);
-        cache.ensure(&a, &loader);
+        cache.ensure(&a, D, &loader);
+        cache.ensure(&a, D, &loader);
         assert_eq!(loader.loads.borrow().len(), 1);
         assert!(
-            matches!(cache.get(&a.path), Some(PreviewEntry::Failed(m)) if m.contains("broken"))
+            matches!(cache.get(&a.path, D), Some(PreviewEntry::Failed(m)) if m.contains("broken"))
         );
     }
 
@@ -424,8 +430,11 @@ mod tests {
         let loader = FakePreviewLoader::returning(preview(vec![]));
         let mut cache = PreviewCache::default();
         let a = theme("a", None);
-        cache.ensure(&a, &loader);
-        assert!(matches!(cache.get(&a.path), Some(PreviewEntry::Failed(_))));
+        cache.ensure(&a, D, &loader);
+        assert!(matches!(
+            cache.get(&a.path, D),
+            Some(PreviewEntry::Failed(_))
+        ));
     }
 
     #[test]
@@ -433,10 +442,43 @@ mod tests {
         let loader = FakePreviewLoader::returning(preview(vec![frame(2, 0, [255; 4])]));
         let mut cache = PreviewCache::default();
         let (a, b) = (theme("a", None), theme("b", None));
-        cache.ensure(&a, &loader);
-        cache.ensure(&b, &loader);
+        cache.ensure(&a, D, &loader);
+        cache.ensure(&b, D, &loader);
         assert_eq!(*loader.loads.borrow(), [a.path.clone(), b.path.clone()]);
-        assert!(cache.get_mut(&b.path).is_some());
-        assert!(cache.get(Path::new("/other")).is_none());
+        assert!(cache.get_mut(&b.path, D).is_some());
+        assert!(cache.get(Path::new("/other"), D).is_none());
+    }
+
+    #[test]
+    fn each_state_of_a_theme_is_loaded_lazily_and_once() {
+        let loader = FakePreviewLoader::returning(preview(vec![frame(2, 0, [255; 4])]));
+        let mut cache = PreviewCache::default();
+        let a = theme("a", None);
+        cache.ensure(&a, D, &loader);
+        assert!(cache.get(&a.path, CursorState::Pointer).is_none());
+        cache.ensure(&a, CursorState::Pointer, &loader);
+        cache.ensure(&a, CursorState::Pointer, &loader);
+        cache.ensure(&a, D, &loader);
+        assert_eq!(*loader.states.borrow(), [D, CursorState::Pointer]);
+    }
+
+    #[test]
+    fn a_missing_state_is_cached_as_failed_without_affecting_others() {
+        let loader =
+            FakePreviewLoader::lacking(preview(vec![frame(2, 0, [255; 4])]), CursorState::Text);
+        let mut cache = PreviewCache::default();
+        let a = theme("a", None);
+        cache.ensure(&a, CursorState::Text, &loader);
+        cache.ensure(&a, CursorState::Text, &loader);
+        cache.ensure(&a, D, &loader);
+        assert_eq!(loader.loads.borrow().len(), 2);
+        assert!(matches!(
+            cache.get(&a.path, CursorState::Text),
+            Some(PreviewEntry::Failed(_))
+        ));
+        assert!(matches!(
+            cache.get(&a.path, D),
+            Some(PreviewEntry::Loaded(_))
+        ));
     }
 }
