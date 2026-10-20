@@ -1,0 +1,167 @@
+name: Alpha
+
+# Every push to develop publishes vX.Y.(Z+1)-alpha.<run number> as a GitHub
+# pre-release, where vX.Y.Z is the latest stable tag.
+#
+# Tags created with the GITHUB_TOKEN do not trigger other workflows, so the
+# alpha tag never starts release.yml. That is intended: alphas are not stable
+# releases.
+on:
+  push:
+    branches: [develop]
+
+# Read-only by default; only the publish job is granted write access.
+permissions:
+  contents: read
+
+# One alpha build at a time; a newer push waits instead of cancelling a publish.
+concurrency:
+  group: alpha
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  ASSET: cursorswap-x86_64-unknown-linux-gnu
+
+jobs:
+  version:
+    name: Compute alpha version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.alpha.outputs.version }}
+      tag: ${{ steps.alpha.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Find the latest stable tag and derive the alpha version
+        id: alpha
+        env:
+          COUNTER: ${{ github.run_number }}
+        run: |
+          git fetch --tags --force origin
+          # Stable tags only: vX.Y.Z with no hyphen (alphas and rcs contain one).
+          latest=$(git tag --list 'v*' | grep -v -- '-' | sort -V | tail -n 1)
+          if [ -z "$latest" ]; then
+            echo "::error::no stable tag (vX.Y.Z) found; publish a stable release before any alpha" >&2
+            exit 1
+          fi
+          echo "latest stable tag: ${latest}"
+          version=$(sh scripts/release.sh alpha-version "$latest" "$COUNTER")
+          echo "alpha version: ${version}"
+          {
+            echo "version=${version}"
+            echo "tag=v${version}"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply the alpha version to Cargo.toml and Cargo.lock
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # Runner-only: the bump is never committed or pushed.
+          if [ "$(sh scripts/release.sh cargo-version)" != "$VERSION" ]; then
+            sh scripts/release.sh bump "$VERSION"
+          fi
+          cargo update --workspace
+          grep -q "^version = \"${VERSION}\"$" Cargo.toml
+      - name: Run tests
+        run: cargo test --locked --all-targets
+
+  build:
+    name: Build
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Apply the alpha version to Cargo.toml and Cargo.lock
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # Runner-only: the bump is never committed or pushed.
+          if [ "$(sh scripts/release.sh cargo-version)" != "$VERSION" ]; then
+            sh scripts/release.sh bump "$VERSION"
+          fi
+          cargo update --workspace
+          grep -q "^version = \"${VERSION}\"$" Cargo.toml
+      - name: Build
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+      - name: Check the binary reports the alpha version
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          reported=$(target/x86_64-unknown-linux-gnu/release/cursorswap --version)
+          echo "$reported"
+          case $reported in
+            *" ${VERSION}") ;;
+            *)
+              echo "::error::binary reports '${reported}', expected version ${VERSION}" >&2
+              exit 1
+              ;;
+          esac
+      - name: Stage assets and checksum
+        run: |
+          mkdir dist
+          cp target/x86_64-unknown-linux-gnu/release/cursorswap "dist/${ASSET}"
+          (cd dist && sha256sum "${ASSET}" > "${ASSET}.sha256")
+          (cd dist && sha256sum -c "${ASSET}.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish alpha pre-release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Create the pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          # Always a pre-release, never --latest: the updater and install.sh
+          # only follow the latest stable release.
+          notes="Alpha build of commit ${GITHUB_SHA} from develop. Not for general use: install it only to test a change, and verify the checksum. Stable releases are published from main."
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "$TAG" \
+            --notes "$notes"
+      - name: Prune old alpha pre-releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Keep the 10 newest alpha pre-releases and delete the rest with
+          # their tags. Only tags containing "-alpha." are ever considered.
+          gh release list --limit 1000 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | contains("-alpha.")))]
+                  | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+            while IFS= read -r old; do
+              case $old in
+                *-alpha.*) ;;
+                *) echo "::warning::refusing to delete non-alpha tag ${old}" >&2; continue ;;
+              esac
+              echo "deleting ${old}"
+              gh release delete "$old" --cleanup-tag --yes
+            done

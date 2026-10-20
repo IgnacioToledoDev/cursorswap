@@ -19,6 +19,8 @@ Commands:
   check-tag <tag>       validate a release tag (vX.Y.Z[-pre]); print version= and prerelease=
   cargo-version         print the package version from ./Cargo.toml
   bump <version>        set the package version in ./Cargo.toml (no leading "v")
+  alpha-version <latest-stable-tag> <counter>
+                        print the alpha version: next patch of a stable tag plus -alpha.<counter>
   -h, --help            show this help
 USAGE
 }
@@ -46,6 +48,23 @@ tag_version() {
   esac
   VERSION=${1#v}
   validate_version "$VERSION"
+}
+
+# alpha_version <latest-stable-tag> <counter>: print X.Y.(Z+1)-alpha.<counter>.
+# The base must be a plain stable tag; the counter is a SemVer numeric identifier.
+alpha_version() {
+  tag_version "$1"
+  case $VERSION in
+    *-*) die "'$1' is a pre-release; the alpha base must be a stable tag (vX.Y.Z)" ;;
+  esac
+  case $2 in
+    *"$NL"*) die "counter must be a single line" ;;
+  esac
+  printf '%s\n' "$2" | grep -Eq '^(0|[1-9][0-9]*)$' ||
+    die "counter '$2' must be a non-negative integer without leading zeros"
+  base=${VERSION%.*}
+  patch=${VERSION##*.}
+  printf '%s.%s-alpha.%s\n' "$base" "$((patch + 1))" "$2"
 }
 
 cargo_version() {
@@ -83,6 +102,10 @@ case $cmd in
   cargo-version)
     need_arg "$(($# + 1))"
     cargo_version
+    ;;
+  alpha-version)
+    [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+    alpha_version "$1" "$2"
     ;;
   bump)
     need_arg "$#"

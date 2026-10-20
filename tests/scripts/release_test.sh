@@ -166,9 +166,47 @@ mkdir -p "$EMPTY"
 rc=$?
 if [ "$rc" -ne 0 ] && [ ! -e "$EMPTY/Cargo.toml" ]; then pass "bump fails without Cargo.toml"; else fail "bump fails without Cargo.toml"; fi
 
+# alpha-version: next patch after the latest stable tag plus -alpha.<counter>
+alpha_ok() { # alpha_ok <tag> <counter> <expected version>
+  run alpha-version "$1" "$2"
+  if [ "$rc" -eq 0 ] && expect_out "$3"; then pass "alpha-version $1 $2 -> $3"; else fail "alpha-version $1 $2 -> $3"; fi
+}
+alpha_ok v0.3.2 7 0.3.3-alpha.7
+alpha_ok v1.0.0 1 1.0.1-alpha.1
+alpha_ok v0.9.9 42 0.9.10-alpha.42
+alpha_ok v10.20.30 120 10.20.31-alpha.120
+
+alpha_refused() { # alpha_refused <tag> <counter>
+  run alpha-version "$1" "$2"
+  if [ "$rc" -ne 0 ] && [ ! -s "$OUT" ] && grep -q '^error:' "$ERR"; then
+    pass "alpha-version rejects '$1' '$2'"
+  else fail "alpha-version rejects '$1' '$2'"; fi
+}
+alpha_refused v0.3.2-rc.1 1
+alpha_refused v0.3.3-alpha.1 2
+alpha_refused 0.3.2 1
+alpha_refused v0.3 1
+alpha_refused v1.0.0+build 1
+alpha_refused "" 1
+alpha_refused vlatest 1
+alpha_refused v0.3.2 ""
+alpha_refused v0.3.2 abc
+alpha_refused v0.3.2 -1
+alpha_refused v0.3.2 1.5
+alpha_refused v0.3.2 01
+alpha_refused v0.3.2 '1;rm'
+alpha_refused v0.3.2 "1
+2"
+run alpha-version v0.3.2
+if [ "$rc" -eq 2 ]; then pass "alpha-version with one argument exits 2"; else fail "alpha-version with one argument exits 2"; fi
+run alpha-version
+if [ "$rc" -eq 2 ]; then pass "alpha-version without arguments exits 2"; else fail "alpha-version without arguments exits 2"; fi
+run alpha-version v0.3.2 1 extra
+if [ "$rc" -eq 2 ]; then pass "alpha-version with three arguments exits 2"; else fail "alpha-version with three arguments exits 2"; fi
+
 # usage
 run --help
-if [ "$rc" -eq 0 ] && grep -q 'check-tag' "$OUT" && grep -q 'bump' "$OUT"; then pass "--help"; else fail "--help"; fi
+if [ "$rc" -eq 0 ] && grep -q 'check-tag' "$OUT" && grep -q 'bump' "$OUT" && grep -q 'alpha-version' "$OUT"; then pass "--help"; else fail "--help"; fi
 run -h
 if [ "$rc" -eq 0 ]; then pass "-h"; else fail "-h"; fi
 run frobnicate
