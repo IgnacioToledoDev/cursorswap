@@ -20,7 +20,8 @@ pub const MIN_FRAME_DELAY_MS: u32 = 30;
 /// Converts premultiplied RGBA (as stored in Xcursor files) to straight alpha.
 pub fn unpremultiply(rgba: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgba.len());
-    for pixel in rgba.chunks_exact(4) {
+    let (pixels, _) = rgba.as_chunks::<4>();
+    for pixel in pixels {
         let alpha = u32::from(pixel[3]);
         if alpha == 0 {
             out.extend_from_slice(&[0, 0, 0, 0]);

@@ -159,7 +159,8 @@ fn to_frame(image: Image) -> Result<PreviewFrame, PreviewError> {
     // stored (B, G, R, A for little-endian ARGB), so swap into RGBA here.
     // Xcursor data is premultiplied alpha and is passed through as is.
     let mut rgba = image.pixels_rgba;
-    for pixel in rgba.chunks_exact_mut(4) {
+    let (pixels, _) = rgba.as_chunks_mut::<4>();
+    for pixel in pixels {
         pixel.swap(0, 2);
     }
     Ok(PreviewFrame {
