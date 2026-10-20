@@ -1,3 +1,4 @@
+mod atomic_write;
 mod fs_theme_inspector;
 mod registry_toml;
 

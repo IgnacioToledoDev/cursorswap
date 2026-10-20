@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::domain::cursor::{Alias, CursorTheme};
 use crate::domain::error::RepositoryError;
 use crate::domain::ports::CursorRepository;
+
+use super::atomic_write::write_atomic;
 
 #[derive(Serialize, Deserialize, Default)]
 struct RegistryFile {
@@ -73,34 +75,12 @@ impl TomlCursorRepository {
         };
         let text = toml::to_string(&file)
             .map_err(|e| RepositoryError::Storage(format!("cannot encode registry: {e}")))?;
-        write_atomic(&self.path, &text).map_err(|e| storage(&self.path, e))
+        write_atomic(&self.path, text.as_bytes()).map_err(|e| storage(&self.path, e))
     }
 }
 
 fn storage(path: &Path, e: io::Error) -> RepositoryError {
     RepositoryError::Storage(format!("{}: {e}", path.display()))
-}
-
-fn write_atomic(target: &Path, contents: &str) -> io::Result<()> {
-    let dir = target
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(dir)?;
-    let mut tmp_name = OsString::from(".");
-    tmp_name.push(target.file_name().unwrap_or_default());
-    tmp_name.push(".tmp");
-    let tmp = dir.join(tmp_name);
-    let result = (|| {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(contents.as_bytes())?;
-        f.sync_all()?;
-        fs::rename(&tmp, target)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
 }
 
 pub fn default_registry_path() -> Option<PathBuf> {
