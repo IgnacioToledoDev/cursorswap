@@ -6,9 +6,8 @@ use xcursor::parser::{Image, parse_xcursor};
 
 use crate::domain::cursor::CursorTheme;
 use crate::domain::error::PreviewError;
-use crate::domain::ports::{Preview, PreviewFrame, PreviewLoader};
+use crate::domain::ports::{CursorState, Preview, PreviewFrame, PreviewLoader};
 
-const CANDIDATE_NAMES: [&str; 4] = ["left_ptr", "default", "arrow", "top_left_arrow"];
 const TARGET_SIZE: u32 = 32;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 256;
@@ -29,8 +28,8 @@ impl XcursorPreviewLoader {
 }
 
 impl PreviewLoader for XcursorPreviewLoader {
-    fn load(&self, theme: &CursorTheme) -> Result<Preview, PreviewError> {
-        let path = locate_cursor_file(&theme.path)?;
+    fn load_state(&self, theme: &CursorTheme, state: CursorState) -> Result<Preview, PreviewError> {
+        let path = locate_cursor_file(&theme.path, state.candidates())?;
         let bytes = read_capped(&path)?;
         check_layout(&bytes)?;
         let images = parse_xcursor(&bytes)
@@ -40,21 +39,21 @@ impl PreviewLoader for XcursorPreviewLoader {
     }
 }
 
-fn locate_cursor_file(theme_path: &Path) -> Result<PathBuf, PreviewError> {
+fn locate_cursor_file(theme_path: &Path, names: &[&str]) -> Result<PathBuf, PreviewError> {
     let cursors_dir = fs::canonicalize(theme_path.join("cursors")).map_err(|err| {
         PreviewError::Unavailable(format!(
             "theme has no readable cursors directory ({}): {err}",
             theme_path.display()
         ))
     })?;
-    let candidate = CANDIDATE_NAMES
+    let candidate = names
         .iter()
         .map(|name| cursors_dir.join(name))
         .find(|path| path.exists())
         .ok_or_else(|| {
             PreviewError::Unavailable(format!(
                 "none of {} found in {}",
-                CANDIDATE_NAMES.join(", "),
+                names.join(", "),
                 cursors_dir.display()
             ))
         })?;
@@ -402,5 +401,115 @@ mod tests {
         let dir = TempDir::new().unwrap();
         write_cursor(&dir, "left_ptr", &build_xcursor(&[]));
         assert!(matches!(load(&dir), Err(PreviewError::Decode(_))));
+    }
+
+    // --- cursor states ---
+
+    fn load_state(dir: &TempDir, state: CursorState) -> Result<Preview, PreviewError> {
+        XcursorPreviewLoader::new().load_state(&theme_in(dir), state)
+    }
+
+    #[test]
+    fn load_is_the_default_state() {
+        let dir = TempDir::new().unwrap();
+        write_cursor(&dir, "default", &build_xcursor(&[img(32, 3, 0, 1)]));
+        write_cursor(&dir, "hand2", &build_xcursor(&[img(32, 5, 0, 1)]));
+        assert_eq!(
+            load(&dir).unwrap(),
+            load_state(&dir, CursorState::Default).unwrap()
+        );
+    }
+
+    #[test]
+    fn each_state_resolves_to_its_own_cursor_file() {
+        let dir = TempDir::new().unwrap();
+        for (side, state) in (1..).zip(CursorState::ALL) {
+            write_cursor(
+                &dir,
+                state.candidates()[0],
+                &build_xcursor(&[img(32, side, 0, 1)]),
+            );
+        }
+        for (side, state) in (1..).zip(CursorState::ALL) {
+            assert_eq!(load_state(&dir, state).unwrap().frames[0].width, side);
+        }
+    }
+
+    #[test]
+    fn pointer_resolves_through_the_hand2_alias() {
+        let dir = TempDir::new().unwrap();
+        write_cursor(&dir, "hand2", &build_xcursor(&[img(32, 4, 0, 1)]));
+        write_cursor(&dir, "left_ptr", &build_xcursor(&[img(32, 2, 0, 1)]));
+        assert_eq!(
+            load_state(&dir, CursorState::Pointer).unwrap().frames[0].width,
+            4
+        );
+    }
+
+    #[test]
+    fn the_first_existing_candidate_wins() {
+        let dir = TempDir::new().unwrap();
+        write_cursor(&dir, "hand", &build_xcursor(&[img(32, 2, 0, 1)]));
+        write_cursor(&dir, "hand1", &build_xcursor(&[img(32, 3, 0, 1)]));
+        write_cursor(&dir, "pointer", &build_xcursor(&[img(32, 4, 0, 1)]));
+        assert_eq!(
+            load_state(&dir, CursorState::Pointer).unwrap().frames[0].width,
+            4
+        );
+    }
+
+    #[test]
+    fn a_missing_state_is_unavailable_and_names_the_candidates() {
+        let dir = TempDir::new().unwrap();
+        write_cursor(&dir, "left_ptr", &build_xcursor(&[img(32, 2, 0, 1)]));
+        let err = load_state(&dir, CursorState::Text).unwrap_err();
+        assert!(
+            matches!(&err, PreviewError::Unavailable(m) if m.contains("xterm")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn animated_states_keep_every_frame() {
+        let dir = TempDir::new().unwrap();
+        let frames: Vec<Img> = (0..12).map(|_| img(32, 2, 40, 1)).collect();
+        write_cursor(&dir, "left_ptr_watch", &build_xcursor(&frames));
+        let preview = load_state(&dir, CursorState::Progress).unwrap();
+        assert_eq!(preview.frames.len(), 12);
+    }
+
+    #[test]
+    fn limits_apply_to_every_state() {
+        let dir = TempDir::new().unwrap();
+        write_cursor(&dir, "xterm", &build_xcursor(&[img(32, 257, 0, 1)]));
+        assert!(matches!(
+            load_state(&dir, CursorState::Text),
+            Err(PreviewError::Decode(_))
+        ));
+        let many: Vec<Img> = (0..65).map(|_| img(32, 1, 1, 1)).collect();
+        write_cursor(&dir, "watch", &build_xcursor(&many));
+        assert!(matches!(
+            load_state(&dir, CursorState::Wait),
+            Err(PreviewError::Decode(_))
+        ));
+        write_cursor(&dir, "help", &vec![0u8; (MAX_FILE_BYTES + 1) as usize]);
+        assert!(matches!(
+            load_state(&dir, CursorState::Help),
+            Err(PreviewError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn a_state_symlink_escaping_the_cursors_dir_is_rejected() {
+        let theme = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("secret");
+        fs::write(&target, build_xcursor(&[img(32, 2, 0, 1)])).unwrap();
+        fs::create_dir_all(theme.path().join("cursors")).unwrap();
+        symlink(&target, theme.path().join("cursors/pointer")).unwrap();
+        assert!(matches!(
+            load_state(&theme, CursorState::Pointer),
+            Err(PreviewError::Unavailable(_))
+        ));
     }
 }

@@ -11,8 +11,8 @@ use crate::domain::error::{
 use crate::domain::package::PackageInfo;
 use crate::domain::ports::{
     BinaryInstaller, Clock, Confirm, CurrentCursorProvider, CursorApplier, CursorRepository,
-    InstallMethodDetector, PackageManager, PackageSearch, Preview, PreviewLoader, Relauncher,
-    ReleaseSource, ThemeInspector, UpdateStateStore,
+    CursorState, InstallMethodDetector, PackageManager, PackageSearch, Preview, PreviewLoader,
+    Relauncher, ReleaseSource, ThemeInspector, UpdateStateStore,
 };
 use crate::domain::update::{InstallMethod, ReleaseInfo, UpdateState};
 
@@ -134,10 +134,11 @@ impl CurrentCursorProvider for FakeCurrent {
     }
 }
 
-/// Preview loader that records every requested theme path.
+/// Preview loader that records every requested theme path and state.
 pub struct FakePreviewLoader {
     result: Result<Preview, String>,
     pub loads: Rc<RefCell<Vec<PathBuf>>>,
+    pub states: Rc<RefCell<Vec<CursorState>>>,
 }
 
 impl FakePreviewLoader {
@@ -145,6 +146,7 @@ impl FakePreviewLoader {
         FakePreviewLoader {
             result: Ok(preview),
             loads: Rc::default(),
+            states: Rc::default(),
         }
     }
 
@@ -152,13 +154,15 @@ impl FakePreviewLoader {
         FakePreviewLoader {
             result: Err(message.to_string()),
             loads: Rc::default(),
+            states: Rc::default(),
         }
     }
 }
 
 impl PreviewLoader for FakePreviewLoader {
-    fn load(&self, theme: &CursorTheme) -> Result<Preview, PreviewError> {
+    fn load_state(&self, theme: &CursorTheme, state: CursorState) -> Result<Preview, PreviewError> {
         self.loads.borrow_mut().push(theme.path.clone());
+        self.states.borrow_mut().push(state);
         self.result.clone().map_err(PreviewError::Unavailable)
     }
 }
