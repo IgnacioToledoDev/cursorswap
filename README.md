@@ -206,12 +206,15 @@ Run `cursorswap` with no arguments.
 | Key | Action |
 |-----|--------|
 | `j` / `k` or arrow keys | Move the selection |
+| `[` / `]` | Show the previous / next cursor state in the preview |
 | `Enter` | Apply the selected theme (the UI stays open and shows the result of each step) |
 | `a` | Add a theme: type its path, then an optional alias |
 | `d` | Remove the selected theme (`y` to confirm) |
 | `q`, `Esc`, `Ctrl-C` | Quit (`Esc` first cancels a prompt or confirmation) |
 
 The left pane lists your themes with the active one marked. The right pane previews the selected theme and animates it if it is an animated cursor. If a preview cannot be loaded, the UI shows `no preview` and keeps working.
+
+The preview shows one cursor state at a time, named in the top-right of the preview pane. `[` and `]` cycle through the states: `default`, `pointer` (the link hand), `text`, `wait`, `progress`, `not-allowed`, `help`, `grabbing`, then `crosshair`, `move`, `nwse-resize` and `ew-resize`. `pointer` is the closest match for "hover over something clickable" and `grabbing` for "pressed". The chosen state stays selected when you move to another theme. If a theme has no cursor for a state, the pane says `no preview for <state>` and you can keep browsing. Each state is read the first time you select it.
 
 Note: the path prompt does not expand `~`; type the full path, or use the command line `add`, where your shell expands it.
 
