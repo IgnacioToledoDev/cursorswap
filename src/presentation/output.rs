@@ -3,7 +3,7 @@ use crate::application::current::CurrentCursor;
 use crate::domain::cursor::CursorTheme;
 
 pub const EMPTY_LIST_HINT: &str =
-    "No cursor themes registered. Use `cambia-cursor add <PATH>` to register one.";
+    "No cursor themes registered. Use `cursorswap add <PATH>` to register one.";
 
 /// One line per theme; `active` is matched against names case-insensitively.
 pub fn format_list(themes: &[CursorTheme], active: Option<&str>) -> String {

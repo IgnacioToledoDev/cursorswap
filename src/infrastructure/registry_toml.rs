@@ -90,7 +90,7 @@ pub fn registry_path_from(env: impl Fn(&str) -> Option<OsString>) -> Option<Path
         Some(xdg) => PathBuf::from(xdg),
         None => PathBuf::from(non_empty("HOME")?).join(".config"),
     };
-    Some(base.join("cambia-cursor").join("registry.toml"))
+    Some(base.join("cursorswap").join("registry.toml"))
 }
 
 impl CursorRepository for TomlCursorRepository {
@@ -159,7 +159,7 @@ mod tests {
         let env = env_of(&[("XDG_CONFIG_HOME", "/xdg"), ("HOME", "/home/u")]);
         assert_eq!(
             registry_path_from(env),
-            Some(PathBuf::from("/xdg/cambia-cursor/registry.toml"))
+            Some(PathBuf::from("/xdg/cursorswap/registry.toml"))
         );
     }
 
@@ -168,7 +168,7 @@ mod tests {
         let env = env_of(&[("HOME", "/home/u")]);
         assert_eq!(
             registry_path_from(env),
-            Some(PathBuf::from("/home/u/.config/cambia-cursor/registry.toml"))
+            Some(PathBuf::from("/home/u/.config/cursorswap/registry.toml"))
         );
     }
 
@@ -177,7 +177,7 @@ mod tests {
         let env = env_of(&[("XDG_CONFIG_HOME", ""), ("HOME", "/home/u")]);
         assert_eq!(
             registry_path_from(env),
-            Some(PathBuf::from("/home/u/.config/cambia-cursor/registry.toml"))
+            Some(PathBuf::from("/home/u/.config/cursorswap/registry.toml"))
         );
     }
 

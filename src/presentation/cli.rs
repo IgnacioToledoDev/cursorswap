@@ -23,7 +23,7 @@ Exit codes:
 
 #[derive(Debug, Parser, PartialEq, Eq)]
 #[command(
-    name = "cambia-cursor",
+    name = "cursorswap",
     version,
     about = "Switch the system cursor theme by name or alias",
     args_conflicts_with_subcommands = true,
@@ -131,7 +131,7 @@ mod parse_tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
-        Cli::try_parse_from(std::iter::once("cambia-cursor").chain(args.iter().copied()))
+        Cli::try_parse_from(std::iter::once("cursorswap").chain(args.iter().copied()))
     }
 
     #[test]
@@ -253,8 +253,8 @@ mod execute_tests {
             preview: Box::new(FakePreviewLoader::failing("no preview in cli tests")),
             appliers,
         };
-        let cli = Cli::try_parse_from(std::iter::once("cambia-cursor").chain(args.iter().copied()))
-            .unwrap();
+        let cli =
+            Cli::try_parse_from(std::iter::once("cursorswap").chain(args.iter().copied())).unwrap();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let exit = execute(cli, &mut services, &mut out, &mut err);
         let run = Run {
@@ -331,7 +331,7 @@ mod execute_tests {
     fn list_survives_an_unavailable_current_provider() {
         let mut services = run_with(&["list"], themes(), &[], None).1;
         services.current = Box::new(FakeCurrent(Err("nope".into())));
-        let cli = Cli::try_parse_from(["cambia-cursor", "list"]).unwrap();
+        let cli = Cli::try_parse_from(["cursorswap", "list"]).unwrap();
         let mut out = Vec::new();
         let exit = execute(cli, &mut services, &mut out, &mut Vec::new());
         assert_eq!(exit, Exit::Success);
@@ -342,7 +342,7 @@ mod execute_tests {
     fn list_of_empty_registry_prints_the_hint() {
         let r = run_with(&["list"], vec![], &[], None).0;
         assert_eq!(r.exit, Exit::Success);
-        assert!(r.out.contains("cambia-cursor add"));
+        assert!(r.out.contains("cursorswap add"));
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod execute_tests {
     fn current_provider_failure_is_an_error() {
         let mut services = run_with(&["current"], themes(), &[], None).1;
         services.current = Box::new(FakeCurrent(Err("nope".into())));
-        let cli = Cli::try_parse_from(["cambia-cursor", "current"]).unwrap();
+        let cli = Cli::try_parse_from(["cursorswap", "current"]).unwrap();
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(execute(cli, &mut services, &mut out, &mut err), Exit::Error);
         assert!(out.is_empty());
@@ -371,7 +371,7 @@ mod execute_tests {
         let (r, mut services) = run_with(&["add", "/some/dir", "--alias", "dd"], vec![], &[], None);
         assert_eq!(r.exit, Exit::Success);
         assert_eq!(r.out, "added Dir (alias dd)\n");
-        let cli = Cli::try_parse_from(["cambia-cursor", "list"]).unwrap();
+        let cli = Cli::try_parse_from(["cursorswap", "list"]).unwrap();
         let mut out = Vec::new();
         execute(cli, &mut services, &mut out, &mut Vec::new());
         assert_eq!(String::from_utf8(out).unwrap(), "  Dir  dd  /some/dir\n");
@@ -390,7 +390,7 @@ mod execute_tests {
         let (r, mut services) = run_with(&["remove", "nz"], themes(), &[], None);
         assert_eq!(r.exit, Exit::Success);
         assert_eq!(r.out, "removed Nordzy\n");
-        let cli = Cli::try_parse_from(["cambia-cursor", "list"]).unwrap();
+        let cli = Cli::try_parse_from(["cursorswap", "list"]).unwrap();
         let mut out = Vec::new();
         execute(cli, &mut services, &mut out, &mut Vec::new());
         assert!(!String::from_utf8(out).unwrap().contains("Nordzy"));

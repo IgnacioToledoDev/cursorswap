@@ -93,14 +93,14 @@ mod tests {
 
     #[test]
     fn help_and_version_are_success() {
-        for args in [["cambia-cursor", "--help"], ["cambia-cursor", "--version"]] {
+        for args in [["cursorswap", "--help"], ["cursorswap", "--version"]] {
             assert_eq!(Exit::from_clap(&clap_error(&args)), Exit::Success);
         }
     }
 
     #[test]
     fn usage_errors_are_generic_errors_not_2() {
-        for args in [["cambia-cursor", "--bogus"], ["cambia-cursor", "add"]] {
+        for args in [["cursorswap", "--bogus"], ["cursorswap", "add"]] {
             assert_eq!(Exit::from_clap(&clap_error(&args)), Exit::Error);
         }
     }

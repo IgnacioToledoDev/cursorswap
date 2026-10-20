@@ -135,7 +135,7 @@ mod tests {
     fn system_runner_spawn_error_is_io_error() {
         assert!(
             SystemCommandRunner
-                .run("cambia-cursor-no-such-binary", &[])
+                .run("cursorswap-no-such-binary", &[])
                 .is_err()
         );
     }

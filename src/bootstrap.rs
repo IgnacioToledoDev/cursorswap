@@ -137,7 +137,7 @@ mod tests {
             ("HOME", "/home/u"),
         ]);
         let paths = Paths::from_env(env).unwrap();
-        assert_eq!(paths.registry, p("/cfg/cambia-cursor/registry.toml"));
+        assert_eq!(paths.registry, p("/cfg/cursorswap/registry.toml"));
         assert_eq!(paths.hypr_envs, p("/cfg/hypr/envs.conf"));
         assert_eq!(paths.gtk_settings, p("/cfg/gtk-3.0/settings.ini"));
         assert_eq!(paths.icon_link_dir, p("/data/icons"));
@@ -152,7 +152,7 @@ mod tests {
         let paths = Paths::from_env(env_of(&[("HOME", "/home/u")])).unwrap();
         assert_eq!(
             paths.registry,
-            p("/home/u/.config/cambia-cursor/registry.toml")
+            p("/home/u/.config/cursorswap/registry.toml")
         );
         assert_eq!(paths.hypr_envs, p("/home/u/.config/hypr/envs.conf"));
         assert_eq!(paths.icon_link_dir, p("/home/u/.local/share/icons"));

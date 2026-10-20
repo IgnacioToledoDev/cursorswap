@@ -206,22 +206,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
-name = "cambia-cursor"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crossterm",
- "image",
- "ratatui",
- "ratatui-image",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "xcursor",
-]
-
-[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -380,6 +364,22 @@ checksum = "eb2a7d3066da2de787b7f032c736763eb7ae5d355f81a68bab2675a96008b0bf"
 dependencies = [
  "lab",
  "phf",
+]
+
+[[package]]
+name = "cursorswap"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "crossterm",
+ "image",
+ "ratatui",
+ "ratatui-image",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "xcursor",
 ]
 
 [[package]]
