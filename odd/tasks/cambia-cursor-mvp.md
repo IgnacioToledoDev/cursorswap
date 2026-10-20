@@ -71,8 +71,19 @@ Route legend: D = delegated writer, I = inline. Trigger evidence: writer trigger
   - `apply.rs` loop (T2 advisory) re-checked by writer: no defect (no early return, message kept, covered by tests); panic in an applier would abort the rest but appliers return `Result`.
   - Native review: assessed high (process signal on `envs_conf.rs`, 1198 lines vs boundary `8460342`), user granted, 4 lenses approved, acknowledged, authority burned. Reviewed boundary now `71079f5`.
   - Advisory (non-blocking): WARNINGs on `read_cursor_size` first-match vs Hyprland last-assignment-wins with duplicate `XCURSOR_SIZE` lines or an unparsable first value (R3-001/R4-001, `envs_conf.rs:24-30`) and R2-001 `bootstrap.rs:38-46`; SUGGESTIONs R2-002..004, R3-002, R3-003, R4-002. Follow-up candidate: make `read_cursor_size` use the last valid assignment.
-- [ ] T7 (D) Presentation TUI (list + preview, keys j/k/Enter/a/d/q). Tests: `TestBackend` render, key handling.
-- [ ] T8 (I) README, final `cargo test` + `cargo clippy` + manual smoke of `list`/`current` (no real apply without user ok).
+- [x] T7 (D) Presentation TUI (list + preview, keys j/k/Enter/a/d/q). Tests: `TestBackend` render, key handling. **Done with a stated gap: never run in a real terminal.**
+  - Commits `6caea88` (refactor: `Services` carries the preview loader) and `14a673e` (feat: TUI). Crates: ratatui 0.30.2, crossterm 0.29.0, ratatui-image 11.1.0 (`default-features = false`, feature `crossterm`; 12.0.0-rc.3 not used because it is a release candidate), image 0.25 (default features off). Suite 298 passed. Parent spot check: `cargo test` 298 passed, forced clippy clean, `fmt --check` clean, throwaway-HOME `list` exit 0, real `envs.conf` unchanged.
+  - RED/GREEN: Services wiring (compile-error RED only), `preview.rs` 27/27 failed->27/27, `app.rs` 37/37 failed->37/37 (coarse RED: stub `App::new` failed them all at once), `view.rs` 10/11 then 11/11.
+  - **TDD slips (disclosed by writer):** `view.rs` implemented before its tests, retroactive RED via `todo!()` swap (same miss as T5); `app.rs`/`preview.rs` RED was coarse. The CLI test `no_arguments_open_the_tui_placeholder` was deleted because it would now call the real `tui::run`; there is no replacement.
+  - **Not verified without a real terminal:** `Picker::from_query_stdio` detection and the kitty/sixel/iTerm2 paths (tests use halfblocks only), raw mode/alt screen/restore/panic hook, real key events and resize, redraw cadence/animation timing, visual layout and image centring.
+  - Native review: assessed medium (`slice_budget_reached`, 4080 lines incl. `Cargo.lock`, vs boundary `71079f5`), user granted, 1 lens (`review-reliability`) approved, acknowledged, authority burned. Reviewed boundary now `14a673e`.
+  - Advisory (non-blocking): R3-003 WARNING `tui/mod.rs:27-32` no automated coverage of `event_loop`/`TerminalSession`/no-args dispatch to the TUI (candidate: inject an event source, or test the dispatch at CLI level); R3-001 modified keys (Ctrl-U, Alt-x) insert literal chars in prompts; R3-002 preview cache never invalidated on remove/re-add of the same path. Earlier zero-delay advisory (T5 R3-002) is now covered by the 30 ms clamp.
+  - Writer's open question, still pending the user: composite transparent pixels onto a neutral background in the halfblocks fallback instead of black.
+  - Slice S3 (T6, T7, T8) on `feat/cambia-cursor-presentation`.
+- [x] T8 (I) README, final `cargo test` + `cargo clippy` + manual smoke of `list`/`current` (no real apply without user ok).
+  - `README.md` written from the real `--help` output (usage, what each step changes, exit codes, registry format, layers, known limitations). Passive documentation: structural readback only, no native review.
+  - Final checks on `feat/cambia-cursor-presentation`: `cargo test` 298 passed, `cargo clippy --all-targets -- -D warnings` 0 warnings/errors, `cargo fmt --check` clean. Smoke with throwaway HOME done for `--help`, `list`, `current`, unknown query (exit 2).
+  - **Not done, needs the user:** a real `apply` against the real system and the interactive TUI in a real terminal were never run.
 
 ## Acceptance criteria
 - `cambia-cursor Nordzy-cursors` and `cambia-cursor N` both resolve and apply to the 4 sites.
