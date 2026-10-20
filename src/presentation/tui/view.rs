@@ -10,9 +10,11 @@ use ratatui_image::Image;
 use super::app::{App, Mode};
 use super::preview::PreviewEntry;
 
-const EMPTY_STATE: &str = "No cursor themes registered.\nPress a to add one.";
-const BROWSE_HELP: &str = "j/k move  Enter apply  a add  d remove  q quit";
+const EMPTY_STATE: &str =
+    "No cursor themes registered.\nPress a to add one.\nPress / to search the AUR.";
+const BROWSE_HELP: &str = "j/k move  Enter apply  a add  / search  d remove  q quit";
 const PROMPT_HELP: &str = "Enter confirm  Esc cancel";
+const RESULTS_HELP: &str = "j/k move  Enter install  / search  Esc back";
 const UPDATE_HELP: &str = "y update  n not now  s skip this version";
 
 struct Areas {
@@ -56,6 +58,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let help = match app.mode {
         Mode::Browse => BROWSE_HELP,
         Mode::UpdatePrompt => UPDATE_HELP,
+        Mode::SearchResults => RESULTS_HELP,
         _ => PROMPT_HELP,
     };
     frame.render_widget(
@@ -65,6 +68,27 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let (Mode::UpdatePrompt, Some(latest)) = (app.mode, &app.update_offer) {
         render_update_modal(frame, latest, &app.installed);
     }
+    if let (Mode::ConfirmInstall, Some(package)) = (app.mode, app.results.get(app.result_selected))
+    {
+        render_install_modal(frame, &package.name);
+    }
+}
+
+fn render_install_modal(frame: &mut Frame, package: &str) {
+    let area = frame.area();
+    let size = Size::new(60.min(area.width), 9.min(area.height));
+    let popup = centered(area, size);
+    let text = format!(
+        "Install package {package}?\n\n\
+         yay will show the PKGBUILD for review and may ask for your sudo password.\n\n\
+         [y] install   [n] cancel"
+    );
+    let modal = Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .block(Block::bordered().title(" Install from the AUR "));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(modal, popup);
 }
 
 fn render_update_modal(frame: &mut Frame, latest: &str, installed: &str) {
@@ -98,7 +122,36 @@ fn status_text(app: &App) -> String {
     }
 }
 
+fn render_results(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .results
+        .iter()
+        .map(|package| {
+            let installed = if package.installed {
+                "[installed] "
+            } else {
+                ""
+            };
+            ListItem::new(vec![
+                Line::from(format!("{} {}", package.name, package.version)),
+                Line::from(format!("  {installed}{}", package.description))
+                    .style(Style::new().add_modifier(Modifier::DIM)),
+            ])
+        })
+        .collect();
+    let list = List::new(items)
+        .block(Block::bordered().title(" AUR results "))
+        .highlight_symbol("> ")
+        .highlight_style(Style::new().add_modifier(Modifier::BOLD | Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(app.result_selected));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
 fn render_list(frame: &mut Frame, app: &App, area: Rect) {
+    if matches!(app.mode, Mode::SearchResults | Mode::ConfirmInstall) {
+        render_results(frame, app, area);
+        return;
+    }
     let block = Block::bordered().title(" Themes ");
     if app.themes.is_empty() {
         let empty = Paragraph::new(EMPTY_STATE)
@@ -412,6 +465,129 @@ mod tests {
         );
         let lines = draw(&mut app, 80, 20);
         assert!(lines[18].contains("Remove Nordzy?"), "{:?}", lines[18]);
+    }
+
+    fn key(app: &mut App, s: &mut Services, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE), s);
+    }
+
+    /// An app that searched "nord" against two fake AUR packages.
+    fn results_app() -> (App, Services) {
+        use crate::application::fakes::{CallLog, FakePackages};
+        use crate::domain::package::PackageInfo;
+        let (mut app, mut s) = app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
+        let mut fake = FakePackages::new(&CallLog::default());
+        fake.results = ["nordzy-cursors", "bibata-cursor-theme"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| PackageInfo {
+                repository: "aur".into(),
+                name: (*name).into(),
+                version: format!("1.{i}-1"),
+                description: format!("Cursor pack {i}"),
+                installed: i == 1,
+            })
+            .collect();
+        s.searcher = Box::new(fake);
+        key(&mut app, &mut s, KeyCode::Char('/'));
+        for c in "nord".chars() {
+            key(&mut app, &mut s, KeyCode::Char(c));
+        }
+        key(&mut app, &mut s, KeyCode::Enter);
+        (app, s)
+    }
+
+    #[test]
+    fn the_search_prompt_replaces_the_status_line() {
+        let (mut app, mut s) = app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
+        key(&mut app, &mut s, KeyCode::Char('/'));
+        key(&mut app, &mut s, KeyCode::Char('n'));
+        let lines = draw(&mut app, 80, 20);
+        assert!(lines[18].contains("Search AUR: n_"), "{:?}", lines[18]);
+        assert!(lines[19].contains("Esc cancel"), "{:?}", lines[19]);
+    }
+
+    #[test]
+    fn the_results_replace_the_theme_list_with_name_version_and_description() {
+        let (mut app, _s) = results_app();
+        let text = screen(&draw(&mut app, 100, 20));
+        for needle in [
+            "AUR results",
+            "> nordzy-cursors 1.0-1",
+            "Cursor pack 0",
+            "bibata-cursor-theme 1.1-1",
+            "[installed] Cursor pack 1",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in\n{text}");
+        }
+        assert!(!text.contains(" Themes "), "{text}");
+    }
+
+    #[test]
+    fn the_results_highlight_follows_the_selection() {
+        let (mut app, mut s) = results_app();
+        key(&mut app, &mut s, KeyCode::Char('j'));
+        let text = screen(&draw(&mut app, 100, 20));
+        assert!(text.contains("> bibata-cursor-theme"), "{text}");
+        assert!(!text.contains("> nordzy-cursors"), "{text}");
+    }
+
+    #[test]
+    fn the_results_help_lists_the_result_keys() {
+        let (mut app, _s) = results_app();
+        let lines = draw(&mut app, 100, 20);
+        let help = lines.last().unwrap();
+        for k in ["j/k move", "Enter install", "/ search", "Esc back"] {
+            assert!(help.contains(k), "{help}");
+        }
+        assert!(lines[18].contains("result(s) for nord"), "{:?}", lines[18]);
+    }
+
+    #[test]
+    fn the_install_confirmation_names_the_package_and_the_choices() {
+        let (mut app, mut s) = results_app();
+        key(&mut app, &mut s, KeyCode::Enter);
+        let text = screen(&draw(&mut app, 100, 24));
+        for needle in [
+            "Install package",
+            "nordzy-cursors",
+            "yay",
+            "[y] install",
+            "[n] cancel",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in\n{text}");
+        }
+    }
+
+    #[test]
+    fn no_install_confirmation_is_drawn_while_browsing_results() {
+        let (mut app, _s) = results_app();
+        let text = screen(&draw(&mut app, 100, 24));
+        assert!(!text.contains("[y] install"), "{text}");
+    }
+
+    #[test]
+    fn the_browse_help_lists_the_search_key() {
+        let (mut app, _s) = app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
+        let lines = draw(&mut app, 100, 20);
+        assert!(lines.last().unwrap().contains("/ search"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_empty_registry_points_at_the_aur_search() {
+        let (mut app, _s) = app_with(vec![], None, FakePreviewLoader::returning(two_tone()));
+        let text = screen(&draw(&mut app, 100, 20));
+        assert!(text.contains("/ to search the AUR"), "{text}");
+    }
+
+    #[test]
+    fn search_modes_do_not_panic_on_tiny_terminals() {
+        for (w, h) in [(0, 0), (1, 1), (10, 3), (3, 10), (40, 2), (300, 80)] {
+            let (mut app, mut s) = results_app();
+            draw(&mut app, w, h);
+            key(&mut app, &mut s, KeyCode::Enter);
+            draw(&mut app, w, h);
+        }
     }
 
     #[test]
