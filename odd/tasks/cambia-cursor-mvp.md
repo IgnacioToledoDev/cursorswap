@@ -36,7 +36,10 @@ Cursor theme lives in 4 places (`~/.config/hypr/envs.conf`, `~/.config/gtk-3.0/s
 ## Tasks
 Route legend: D = delegated writer, I = inline. Trigger evidence: writer trigger (2+ non-trivial files).
 
-- [ ] T1 (D) Scaffold crate + domain: `CursorTheme`, `Alias` validation, ports (`CursorRepository`, `CursorApplier`, `PreviewLoader`), domain errors. Tests: alias/name rules.
+- [x] T1 (D) Scaffold crate + domain: `CursorTheme`, `Alias` validation, ports (`CursorRepository`, `CursorApplier`, `PreviewLoader`), domain errors. Tests: alias/name rules.
+  - Commit `c569ce9` on `feat/cambia-cursor-domain-app`. RED 0/8 then 8/22 passed, GREEN 22/22 (writer report). Parent spot check: `cargo test` 22 passed. Writer also ran clippy `-D warnings` and `fmt --check`, clean.
+  - Native review: assessed high (`process_boundary` signal on `src/main.rs`, 449 lines), consent granted by user, 4 lenses approved, acknowledged, authority burned. Reviewed boundary is now `c569ce9`.
+  - Non-blocking advisory findings, follow-ups only (not reopened): R2 name reported as alias in an error (`cursor.rs:78-83`, WARNING), R3-001 theme path unvalidated/ordering concern (`cursor.rs:42-52`, WARNING), plus 5 SUGGESTIONs (alias length magic constant, crate-wide `dead_code` allow in `main.rs`, unchecked constructor naming, R3-002, R3-003). Decide per task whether to fold into T2/T6.
 - [ ] T2 (D) Application use cases `list/add/apply/remove/current` with in-memory fakes. Tests: resolve order, uniqueness, partial apply reporting.
 - [ ] T3 (D) Infra `registry_toml` repository. Tests: roundtrip, missing file, duplicate, tempdir.
 - [ ] T4 (D) Infra appliers `hyprctl`, `hypr_envs`, `gtk_settings`, `gsettings` + icon-path symlink. Tests: tempdir rewrite preserves other lines; command runner faked.
