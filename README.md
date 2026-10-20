@@ -17,6 +17,7 @@ cursorswap                  # browse themes with a live preview
 - **Switch by name or alias.** `cursorswap Nordzy-cursors` or `cursorswap N`.
 - **Terminal UI with preview.** Browse your themes and see the cursor, animated when the theme is animated.
 - **Bring your own themes.** Register any cursor theme directory you already have; nothing is copied or moved.
+- **Find and install from the AUR.** `cursorswap search` and `cursorswap install` use `yay`, with a confirmation first and yay's own PKGBUILD review.
 - **Applies everywhere.** Hyprland env, GTK 3, gsettings and the live session, in one step.
 - **Fail-safe.** If one step fails, the others still run and you get a per-step report and a distinct exit code.
 - **Safe file edits.** Only the cursor lines are changed. Writes are atomic, and config files that are symlinks (for example, managed dotfiles) are written through the link so the link is preserved.
@@ -28,6 +29,8 @@ cursorswap                  # browse themes with a live preview
 - `gsettings` (from GLib) for the GTK/GNOME setting
 - Rust toolchain to build from source (a recent stable release; the crate uses Rust edition 2024)
 - For the best preview: a terminal that supports an image protocol (kitty, WezTerm, foot with sixel, iTerm2, ...). Other terminals fall back to Unicode half-block characters.
+
+- `yay` (and `pacman`), only for `search` and `install`; see [Installing themes from the AUR](#installing-themes-from-the-aur)
 
 `hyprctl` and `gsettings` are only needed for their own step. If one is missing, that step is reported as failed and the rest still apply.
 
@@ -105,6 +108,8 @@ cursorswap <COMMAND>
 | `cursorswap current` | Show the active theme |
 | `cursorswap add <PATH> [--name <NAME>] [--alias <ALIAS>]` | Register a theme directory |
 | `cursorswap remove <QUERY>` | Remove a theme from the registry (files are not touched) |
+| `cursorswap search <TERM>` | Search the AUR (through `yay`) for cursor themes |
+| `cursorswap install <PACKAGE> [--alias <ALIAS>]` | Install an AUR package with `yay` and register the cursor themes it provides |
 | `cursorswap --help` / `--version` | Help and version |
 
 ### Names and aliases
@@ -112,13 +117,41 @@ cursorswap <COMMAND>
 - A query is matched against theme **names** first (case-insensitive), then **aliases**.
 - By default a theme's name is its directory name. Override it with `--name`.
 - An alias is 1 to 8 ASCII letters or digits, for example `N` or `nord`. It cannot be the same as another theme's name or alias.
-- `list`, `add`, `remove` and `current` are subcommands. A theme named like one of them can only be applied through its alias.
+- `list`, `add`, `remove`, `current`, `search` and `install` are subcommands. A theme named like one of them can only be applied through its alias.
 
 ### Registering and removing themes
 
 `add` records the directory where it is. Nothing is copied, so you can point at `/usr/share/icons`, a folder in your dotfiles, or anywhere else. If the theme lives outside a standard icon directory, applying it creates a symlink in `~/.local/share/icons` so that GTK and Hyprland can find it.
 
 `remove` only deletes the registry entry. It never deletes theme files or symlinks.
+
+### Installing themes from the AUR
+
+`search` and `install` need [`yay`](https://github.com/Jguer/yay) in your `PATH`. Without it they stop with an error that points to the yay install instructions.
+
+```sh
+cursorswap search nordzy                    # list cursor themes matching "nordzy"
+cursorswap install nordzy-cursors           # install and register
+cursorswap install nordzy-cursors --alias N # same, with an alias
+```
+
+`search` runs `yay -Ss <TERM>` and prints the packages whose name or description contains "cursor" (case-insensitive), with their version and description. Packages that are already installed are marked `[installed]`. The filter is a heuristic: it can show non-theme packages, and it can miss themes that never use the word "cursor".
+
+`install` works in these steps:
+
+1. It checks that `yay` is available and that the package name is valid.
+2. It shows the exact package name and asks for confirmation. The default answer is **no**. If standard input is not a terminal, it stops with an error instead of assuming yes.
+3. It runs `yay -S <package>` attached to your terminal. yay itself shows the PKGBUILD for review and asks for your sudo password.
+4. It lists the files of the installed package (`pacman -Ql`) and registers every directory that contains `index.theme` and `cursors/`, named after the directory.
+5. Themes that are already registered (same path or same name) are skipped and reported, not treated as an error.
+
+Safety behavior:
+
+- `cursorswap` never passes `--noconfirm` to yay and never runs `sudo` itself. Reviewing the PKGBUILD and entering your password stay your decisions, inside yay.
+- Nothing is installed unless you answer `y` or `yes`.
+- A package that provides no valid cursor theme registers nothing and exits with code 1 (the package itself stays installed; remove it with your package manager).
+- `--alias` only works when the package provides exactly one theme. The number of themes is only known after the install, so with several themes the command exits with code 1, registers nothing and lists the directories; register them with `cursorswap add <PATH> --alias <ALIAS>`. An invalid or reserved alias is rejected before anything is installed.
+- If `yay -S` fails or you abort it, nothing is registered.
 
 ### Terminal UI
 
@@ -211,15 +244,19 @@ Locations are derived from these environment variables:
 
 **The preview looks blocky.** Your terminal does not support an image protocol, so half-block characters are used. Try kitty, WezTerm or another terminal with graphics support. In this fallback, transparent pixels render as black.
 
+**`install` says `yay` was not found.** Install yay first: https://github.com/Jguer/yay#installation
+
+**`install` says standard input is not a terminal.** The confirmation needs an interactive terminal; run the command directly in one.
+
 **`add` says the path is not a valid theme.** The directory needs an `index.theme` file and a `cursors/` folder inside it.
 
-**An alias is rejected.** Aliases are 1 to 8 ASCII letters or digits, must be unique, and cannot be `list`, `add`, `remove` or `current`.
+**An alias is rejected.** Aliases are 1 to 8 ASCII letters or digits, must be unique, and cannot be `list`, `add`, `remove`, `current`, `search` or `install`.
 
 ## Limitations
 
 - Hyprland, GTK 3 and gsettings only. There is no GTK 4 specific file, and no native hyprcursor (`manifest.hl`) support.
 - `list` and `current` read the active theme from `XCURSOR_THEME` in `envs.conf`, not from gsettings or the running session.
-- Downloading themes is out of scope; bring your own.
+- Downloading themes is limited to AUR packages through `yay`; there is no other download source, and no AUR support without `yay`.
 - Cursor size is read, never changed.
 - Only the Arch Linux + Hyprland setup has been targeted.
 
@@ -230,8 +267,8 @@ The code is layered, with dependencies pointing inward: `presentation -> applica
 ```
 src/
 ├── domain/          types, validation rules and ports (traits)
-├── application/     use cases: list, add, apply, remove, current
-├── infrastructure/  TOML registry, config-file and command appliers, Xcursor preview, atomic writes
+├── application/     use cases: list, add, apply, remove, current, search, install
+├── infrastructure/  TOML registry, config-file and command appliers, yay/pacman adapter, terminal prompt, Xcursor preview, atomic writes
 ├── presentation/    clap CLI and ratatui TUI
 └── bootstrap.rs     composition root, the only place that knows concrete implementations
 ```
@@ -242,6 +279,6 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-Tests never touch your real home directory, your real cursor themes, `hyprctl` or `gsettings`: they use temporary directories and fakes. The interactive TUI needs a real terminal, so its event loop is not covered by automated tests.
+Tests never touch your real home directory, your real cursor themes, `hyprctl`, `gsettings`, `yay` or `pacman`: they use temporary directories and fakes. The interactive TUI needs a real terminal, so its event loop is not covered by automated tests.
 
 Contributions are welcome. Please keep the layering, add tests with your change, and use conventional commit messages.
