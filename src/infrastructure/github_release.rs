@@ -57,6 +57,8 @@ pub fn parse_release(json: &str) -> Result<ReleaseInfo, UpdateError> {
         version: version.to_string(),
         binary_url,
         checksum_url,
+        notes: None,
+        url: None,
     })
 }
 

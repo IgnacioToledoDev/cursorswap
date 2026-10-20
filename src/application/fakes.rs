@@ -189,6 +189,8 @@ pub fn release(version: &str) -> ReleaseInfo {
         version: version.to_string(),
         binary_url: format!("https://example.invalid/{version}/bin"),
         checksum_url: format!("https://example.invalid/{version}/bin.sha256"),
+        notes: None,
+        url: None,
     }
 }
 

@@ -102,6 +102,8 @@ mod tests {
             version: "0.2.0".into(),
             binary_url: "https://example.invalid/bin".into(),
             checksum_url: "https://example.invalid/bin.sha256".into(),
+            notes: None,
+            url: None,
         }
     }
 

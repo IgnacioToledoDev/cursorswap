@@ -121,7 +121,7 @@ mod tests {
         UpdateState {
             checked_at: Some(NOW - age),
             latest: Some(latest.into()),
-            skipped: None,
+            ..UpdateState::default()
         }
     }
 

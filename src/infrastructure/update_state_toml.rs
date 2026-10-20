@@ -40,6 +40,7 @@ impl UpdateStateStore for TomlUpdateStateStore {
             checked_at: parsed.checked_at,
             latest: parsed.latest,
             skipped: parsed.skipped,
+            ..UpdateState::default()
         }
     }
 
@@ -78,6 +79,7 @@ mod tests {
             checked_at: Some(1_700_000_000),
             latest: Some("0.2.0".into()),
             skipped: Some("0.1.5".into()),
+            ..UpdateState::default()
         };
         store(&dir).save(&state).unwrap();
         assert_eq!(store(&dir).load(), state);
