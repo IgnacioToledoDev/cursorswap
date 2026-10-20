@@ -81,6 +81,7 @@ fn event_loop(
                         Outcome::Continue => {}
                         Outcome::Quit => return Ok(Finish::Quit),
                         Outcome::Update(version) => return Ok(Finish::Update(version)),
+                        Outcome::Install(package) => app.install_package(&package, services),
                     }
                     redraw = true;
                 }

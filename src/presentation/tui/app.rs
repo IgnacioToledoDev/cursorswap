@@ -13,10 +13,13 @@ use ratatui_image::protocol::Protocol;
 use super::preview::{PreviewCache, PreviewEntry};
 use crate::application::add::AddInput;
 use crate::application::apply::{ApplyOutcome, ApplyReport, ApplyStatus};
+use crate::application::install::{InstallInput, InstallReport};
 use crate::application::update::{UpdateStatus, skip_version};
-use crate::application::{add, apply, list, remove};
+use crate::application::{add, apply, install, list, remove, search};
 use crate::domain::cursor::CursorTheme;
-use crate::domain::ports::CursorState;
+use crate::domain::error::ConfirmError;
+use crate::domain::package::PackageInfo;
+use crate::domain::ports::{Confirm, CursorState};
 use crate::domain::update::update_hint;
 use crate::presentation::Services;
 
@@ -27,6 +30,9 @@ pub enum Mode {
     AliasInput,
     ConfirmRemove,
     UpdatePrompt,
+    SearchInput,
+    SearchResults,
+    ConfirmInstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +41,9 @@ pub enum Outcome {
     Quit,
     /// The user accepted the update to this version.
     Update(String),
+    /// The user confirmed installing this AUR package. The caller suspends the
+    /// terminal, then calls `App::install_package`.
+    Install(String),
 }
 
 pub struct App {
@@ -49,6 +58,9 @@ pub struct App {
     /// The newer version offered by the background check, until answered.
     pub update_offer: Option<String>,
     pub installed: String,
+    /// AUR search results and the highlighted one.
+    pub results: Vec<PackageInfo>,
+    pub result_selected: usize,
     pending_path: Option<PathBuf>,
     previews: PreviewCache,
     picker: Picker,
@@ -66,6 +78,8 @@ impl App {
             status: String::new(),
             update_offer: None,
             installed: services.update.installed.clone(),
+            results: Vec::new(),
+            result_selected: 0,
             pending_path: None,
             previews: PreviewCache::default(),
             picker,
@@ -152,6 +166,9 @@ impl App {
             Mode::PathInput | Mode::AliasInput => self.input_key(key.code, services),
             Mode::ConfirmRemove => self.confirm_key(key.code, services),
             Mode::UpdatePrompt => self.update_key(key.code, services),
+            Mode::SearchInput => self.search_input_key(key.code, services),
+            Mode::SearchResults => self.results_key(key.code, services),
+            Mode::ConfirmInstall => self.confirm_install_key(key.code),
         };
         // An offer that arrived mid-task opens as soon as the task is over.
         self.open_pending_offer();
@@ -206,6 +223,7 @@ impl App {
                 self.input.clear();
                 self.status.clear();
             }
+            KeyCode::Char('/') => self.open_search(),
             KeyCode::Char('d') if self.selected_theme().is_some() => {
                 self.mode = Mode::ConfirmRemove;
             }
@@ -234,6 +252,135 @@ impl App {
             self.remove_selected(services);
         }
         Outcome::Continue
+    }
+
+    fn open_search(&mut self) {
+        self.mode = Mode::SearchInput;
+        self.input.clear();
+        self.status.clear();
+    }
+
+    fn search_input_key(&mut self, code: KeyCode, services: &Services) -> Outcome {
+        match code {
+            KeyCode::Esc => self.cancel_prompt(),
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) => self.input.push(c),
+            KeyCode::Enter => self.submit_search(services),
+            _ => {}
+        }
+        Outcome::Continue
+    }
+
+    fn submit_search(&mut self, services: &Services) {
+        let term = self.input.trim().to_string();
+        self.cancel_prompt();
+        if term.is_empty() {
+            return;
+        }
+        match search::search(services.searcher.as_ref(), &term) {
+            Ok(found) if found.is_empty() => {
+                self.status = format!("no cursor themes found for {term}");
+            }
+            Ok(found) => {
+                self.status = format!("{} result(s) for {term}", found.len());
+                self.results = found;
+                self.result_selected = 0;
+                self.mode = Mode::SearchResults;
+            }
+            Err(err) => self.status = format!("error: {err}"),
+        }
+    }
+
+    fn results_key(&mut self, code: KeyCode, services: &Services) -> Outcome {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.close_results(),
+            KeyCode::Char('j') | KeyCode::Down => self.select_result(self.result_selected + 1),
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.select_result(self.result_selected.saturating_sub(1))
+            }
+            KeyCode::Char('/') => self.open_search(),
+            KeyCode::Enter => self.request_install(services),
+            _ => {}
+        }
+        Outcome::Continue
+    }
+
+    fn select_result(&mut self, index: usize) {
+        if !self.results.is_empty() {
+            self.result_selected = index.min(self.results.len() - 1);
+        }
+    }
+
+    fn close_results(&mut self) {
+        self.mode = Mode::Browse;
+        self.results.clear();
+        self.result_selected = 0;
+    }
+
+    /// Checks the installer first, so the user is never asked to confirm
+    /// something that cannot run.
+    fn request_install(&mut self, services: &Services) {
+        if self.results.get(self.result_selected).is_none() {
+            return;
+        }
+        match services.packages.ensure_available() {
+            Ok(()) => self.mode = Mode::ConfirmInstall,
+            Err(err) => self.status = format!("error: {err}"),
+        }
+    }
+
+    fn confirm_install_key(&mut self, code: KeyCode) -> Outcome {
+        if code != KeyCode::Char('y') {
+            self.mode = Mode::SearchResults;
+            return Outcome::Continue;
+        }
+        let package = self
+            .results
+            .get(self.result_selected)
+            .map(|p| p.name.clone());
+        self.close_results();
+        match package {
+            Some(name) => Outcome::Install(name),
+            None => Outcome::Continue,
+        }
+    }
+
+    /// Runs the confirmed install through the same use case as the CLI, then
+    /// reloads the registry. The caller has already handed the terminal to the
+    /// installer, which prompts the user itself.
+    pub fn install_package(&mut self, package: &str, services: &mut Services) {
+        let input = InstallInput {
+            package: package.to_string(),
+            alias: None,
+        };
+        let result = install::install(
+            services.packages.as_ref(),
+            &Confirmed,
+            services.repo.as_mut(),
+            services.inspector.as_ref(),
+            input,
+        );
+        match result {
+            Ok(report) => {
+                self.status = summarize_install(&report);
+                let added = report.registered.last().map(|t| t.name.clone());
+                self.refresh(services, added.as_deref());
+            }
+            Err(err) => {
+                self.status = format!("error: {err}");
+                self.refresh_keeping_status(services);
+            }
+        }
+    }
+
+    fn refresh_keeping_status(&mut self, services: &Services) {
+        let status = std::mem::take(&mut self.status);
+        self.refresh(services, None);
+        if self.status.is_empty() {
+            self.status = status;
+        }
     }
 
     fn select(&mut self, index: usize, services: &Services) {
@@ -347,6 +494,30 @@ impl App {
     }
 }
 
+/// The TUI asks for confirmation in its own modal, before the terminal is
+/// handed over, so the install use case must not ask again.
+struct Confirmed;
+
+impl Confirm for Confirmed {
+    fn confirm(&self, _prompt: &str) -> Result<bool, ConfirmError> {
+        Ok(true)
+    }
+}
+
+fn summarize_install(report: &InstallReport) -> String {
+    let names = |themes: Vec<&str>| themes.join(", ");
+    let mut text = format!("installed {}", report.package);
+    if !report.registered.is_empty() {
+        let added = report.registered.iter().map(|t| t.name.as_str()).collect();
+        text.push_str(&format!("; added {}", names(added)));
+    }
+    if !report.skipped.is_empty() {
+        let skipped = report.skipped.iter().map(|t| t.name.as_str()).collect();
+        text.push_str(&format!("; already registered: {}", names(skipped)));
+    }
+    text
+}
+
 fn summarize_apply(report: &ApplyReport) -> String {
     let total = report.entries.len();
     let failed: Vec<String> = report
@@ -375,8 +546,10 @@ mod tests {
     use std::rc::Rc;
 
     use crate::application::fakes::{
-        CallLog, FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, applier, theme,
+        CallLog, FakeCurrent, FakeInspector, FakePackages, FakePreviewLoader, FakeRepository,
+        applier, theme,
     };
+    use crate::domain::package::PackageInfo;
     use crate::domain::ports::{CursorState, Preview, PreviewFrame};
 
     struct Harness {
@@ -1152,6 +1325,304 @@ mod tests {
         ch(&mut h, 'y');
         assert!(h.app.status.contains("boom"), "{}", h.app.status);
         assert_eq!(h.app.mode, Mode::Browse);
+    }
+
+    // --- AUR search and install ---
+
+    fn cursor_pkg(name: &str, description: &str) -> PackageInfo {
+        PackageInfo {
+            repository: "aur".into(),
+            name: name.into(),
+            version: "1.0-1".into(),
+            description: description.into(),
+            installed: false,
+        }
+    }
+
+    const DIR_FILES: [&str; 1] = ["/usr/share/icons/Dir/index.theme"];
+
+    /// Swaps in package fakes built by `fake`, sharing the harness call log.
+    fn packages_with(h: &mut Harness, fake: impl Fn(&CallLog) -> FakePackages) {
+        h.services.searcher = Box::new(fake(&h.calls));
+        h.services.packages = Box::new(fake(&h.calls));
+    }
+
+    fn aur_fake(log: &CallLog) -> FakePackages {
+        let mut fake = FakePackages::with_files(log, &DIR_FILES);
+        fake.results = vec![
+            cursor_pkg("nordzy-cursors", "Nord cursors"),
+            cursor_pkg("htop", "process viewer"),
+            cursor_pkg("bibata-cursor-theme", "Material cursors"),
+        ];
+        fake
+    }
+
+    /// Opens the prompt, searches "nord" and leaves the app on the results.
+    fn searched() -> Harness {
+        let mut h = harness(two_themes());
+        packages_with(&mut h, aur_fake);
+        ch(&mut h, '/');
+        type_text(&mut h, "nord");
+        press(&mut h, KeyCode::Enter);
+        h
+    }
+
+    /// Confirms the highlighted result and runs the install the way the loop does.
+    fn confirm_and_install(h: &mut Harness) {
+        press(h, KeyCode::Enter);
+        let Outcome::Install(package) = ch(h, 'y') else {
+            panic!("expected an install request");
+        };
+        h.app.install_package(&package, &mut h.services);
+    }
+
+    fn log_entries(h: &Harness) -> Vec<String> {
+        h.calls.borrow().clone()
+    }
+
+    fn installs(h: &Harness) -> usize {
+        log_entries(h)
+            .iter()
+            .filter(|e| e.starts_with("install:"))
+            .count()
+    }
+
+    #[test]
+    fn slash_opens_the_search_prompt() {
+        let mut h = harness(two_themes());
+        ch(&mut h, '/');
+        assert_eq!(h.app.mode, Mode::SearchInput);
+        assert!(h.app.input.is_empty());
+    }
+
+    #[test]
+    fn typing_in_the_search_prompt_never_triggers_commands() {
+        let mut h = harness(two_themes());
+        ch(&mut h, '/');
+        assert_eq!(type_and_outcome(&mut h, "qjd]"), Outcome::Continue);
+        assert_eq!(h.app.input, "qjd]");
+        assert_eq!(h.app.selected, 0);
+    }
+
+    #[test]
+    fn escape_and_an_empty_term_leave_the_search_prompt_without_searching() {
+        let mut h = harness(two_themes());
+        packages_with(&mut h, aur_fake);
+        ch(&mut h, '/');
+        type_text(&mut h, "x");
+        assert_eq!(press(&mut h, KeyCode::Esc), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::Browse);
+        ch(&mut h, '/');
+        type_text(&mut h, "  ");
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(log_entries(&h).is_empty());
+    }
+
+    #[test]
+    fn a_search_lists_only_cursor_like_packages_and_selects_the_first() {
+        let h = searched();
+        assert_eq!(h.app.mode, Mode::SearchResults);
+        let names: Vec<_> = h.app.results.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["nordzy-cursors", "bibata-cursor-theme"]);
+        assert_eq!(h.app.result_selected, 0);
+        assert!(h.app.status.contains("nord"), "{}", h.app.status);
+        assert_eq!(log_entries(&h), ["search:nord"]);
+    }
+
+    #[test]
+    fn a_search_without_matches_reports_it_and_stays_in_browse() {
+        let mut h = harness(two_themes());
+        packages_with(&mut h, FakePackages::new);
+        ch(&mut h, '/');
+        type_text(&mut h, "zzz");
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(
+            h.app.status.contains("no cursor themes"),
+            "{}",
+            h.app.status
+        );
+        assert!(h.app.status.contains("zzz"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn a_failing_search_is_reported_and_navigation_keeps_working() {
+        let mut h = harness(two_themes());
+        packages_with(&mut h, |log| {
+            let mut fake = FakePackages::new(log);
+            fake.search_fails = true;
+            fake
+        });
+        ch(&mut h, '/');
+        type_text(&mut h, "nord");
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(h.app.status.contains("search failed"), "{}", h.app.status);
+        ch(&mut h, 'j');
+        assert_eq!(h.app.selected, 1);
+    }
+
+    #[test]
+    fn an_invalid_search_term_is_reported_without_searching() {
+        let mut h = harness(two_themes());
+        packages_with(&mut h, aur_fake);
+        ch(&mut h, '/');
+        type_text(&mut h, "-S");
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(h.app.status.starts_with("error:"), "{}", h.app.status);
+        assert!(log_entries(&h).is_empty());
+    }
+
+    #[test]
+    fn the_results_move_and_clamp_without_touching_the_theme_list() {
+        let mut h = searched();
+        press(&mut h, KeyCode::Up);
+        assert_eq!(h.app.result_selected, 0);
+        ch(&mut h, 'j');
+        ch(&mut h, 'j');
+        assert_eq!(h.app.result_selected, 1);
+        press(&mut h, KeyCode::Up);
+        assert_eq!(h.app.result_selected, 0);
+        ch(&mut h, 'j');
+        ch(&mut h, 'k');
+        assert_eq!(h.app.result_selected, 0);
+        assert_eq!(h.app.selected, 0);
+    }
+
+    #[test]
+    fn escape_closes_the_results_without_quitting() {
+        let mut h = searched();
+        assert_eq!(press(&mut h, KeyCode::Esc), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert!(h.app.results.is_empty());
+        assert_eq!(h.app.selected_theme().unwrap().name, "Nordzy");
+    }
+
+    #[test]
+    fn slash_in_the_results_starts_a_new_search() {
+        let mut h = searched();
+        ch(&mut h, '/');
+        assert_eq!(h.app.mode, Mode::SearchInput);
+        assert!(h.app.input.is_empty());
+    }
+
+    #[test]
+    fn enter_on_a_result_asks_for_confirmation_before_installing() {
+        let mut h = searched();
+        assert_eq!(press(&mut h, KeyCode::Enter), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::ConfirmInstall);
+        assert_eq!(installs(&h), 0);
+    }
+
+    #[test]
+    fn a_missing_installer_is_reported_before_asking_anything() {
+        let mut h = searched();
+        packages_with(&mut h, |log| {
+            let mut fake = aur_fake(log);
+            fake.missing_tool = true;
+            fake
+        });
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(h.app.mode, Mode::SearchResults);
+        assert!(h.app.status.contains("yay"), "{}", h.app.status);
+        assert_eq!(installs(&h), 0);
+    }
+
+    #[test]
+    fn declining_the_installation_returns_to_the_results() {
+        let mut h = searched();
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(ch(&mut h, 'n'), Outcome::Continue);
+        assert_eq!(h.app.mode, Mode::SearchResults);
+        assert_eq!(h.app.results.len(), 2);
+        assert_eq!(installs(&h), 0);
+    }
+
+    #[test]
+    fn confirming_emits_the_install_of_the_selected_package_without_running_it() {
+        let mut h = searched();
+        ch(&mut h, 'j');
+        press(&mut h, KeyCode::Enter);
+        assert_eq!(
+            ch(&mut h, 'y'),
+            Outcome::Install("bibata-cursor-theme".into())
+        );
+        assert_eq!(h.app.mode, Mode::Browse);
+        assert_eq!(installs(&h), 0, "running yay is the event loop's job");
+    }
+
+    #[test]
+    fn installing_registers_the_theme_selects_it_and_reports_it() {
+        let mut h = searched();
+        confirm_and_install(&mut h);
+        assert_eq!(registry_names(&h), ["Nordzy", "Bibata", "Dir"]);
+        assert_eq!(h.app.themes.len(), 3);
+        assert_eq!(h.app.selected_theme().unwrap().name, "Dir");
+        assert!(h.app.status.contains("nordzy-cursors"), "{}", h.app.status);
+        assert!(h.app.status.contains("Dir"), "{}", h.app.status);
+        assert!(
+            !log_entries(&h).iter().any(|e| e.starts_with("confirm:")),
+            "the TUI already asked"
+        );
+        assert_eq!(h.app.mode, Mode::Browse);
+    }
+
+    #[test]
+    fn installing_an_already_registered_theme_says_so() {
+        let mut h = harness(vec![theme("Dir", None)]);
+        packages_with(&mut h, aur_fake);
+        h.app.install_package("nordzy-cursors", &mut h.services);
+        assert_eq!(registry_names(&h), ["Dir"]);
+        assert!(h.app.status.contains("already"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn a_failed_install_is_reported_and_keeps_everything_working() {
+        let mut h = searched();
+        packages_with(&mut h, |log| {
+            let mut fake = aur_fake(log);
+            fake.install_fails = true;
+            fake
+        });
+        confirm_and_install(&mut h);
+        assert!(h.app.status.contains("install failed"), "{}", h.app.status);
+        assert_eq!(registry_names(&h), ["Nordzy", "Bibata"]);
+        ch(&mut h, 'j');
+        assert_eq!(h.app.selected, 1);
+    }
+
+    #[test]
+    fn a_package_without_a_theme_is_reported() {
+        let mut h = searched();
+        packages_with(&mut h, |log| {
+            let mut fake = aur_fake(log);
+            fake.files = Vec::new();
+            fake
+        });
+        h.app.install_package("nordzy-cursors", &mut h.services);
+        assert!(h.app.status.contains("no cursor theme"), "{}", h.app.status);
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_the_search_modes() {
+        for setup in ["/", "/nord\n", "/nord\n\n"] {
+            let mut h = harness(two_themes());
+            packages_with(&mut h, aur_fake);
+            for c in setup.chars() {
+                match c {
+                    '\n' => press(&mut h, KeyCode::Enter),
+                    c => ch(&mut h, c),
+                };
+            }
+            let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+            assert_eq!(
+                h.app.handle_key(key, &mut h.services),
+                Outcome::Quit,
+                "after {setup:?}"
+            );
+        }
     }
 
     // --- quitting ---

@@ -89,7 +89,8 @@ fn status_text(app: &App) -> String {
         Mode::Browse => app.status.clone(),
         Mode::PathInput => format!("Theme directory: {}_", app.input),
         Mode::AliasInput => format!("Alias (optional, empty for none): {}_", app.input),
-        Mode::UpdatePrompt => app.status.clone(),
+        Mode::UpdatePrompt | Mode::SearchResults | Mode::ConfirmInstall => app.status.clone(),
+        Mode::SearchInput => format!("Search AUR: {}_", app.input),
         Mode::ConfirmRemove => match app.selected_theme() {
             Some(theme) => format!("Remove {}? y confirms, any other key cancels", theme.name),
             None => String::new(),
