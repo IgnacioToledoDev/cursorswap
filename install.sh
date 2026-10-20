@@ -100,6 +100,8 @@ case ":${PATH:-}:" in
   *)
     printf '\nNote: %s is not in your PATH.\n' "$prefix/bin"
     printf 'Add this line to your shell profile, then restart your shell:\n'
+    # The literal $PATH is intentional: it is the text the user will paste.
+    # shellcheck disable=SC2016
     printf '  export PATH="%s:$PATH"\n' "$prefix/bin"
     ;;
 esac
