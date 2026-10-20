@@ -3,6 +3,7 @@
 
 mod application;
 mod domain;
+mod infrastructure;
 
 fn main() {
     println!("cambia-cursor {}", env!("CARGO_PKG_VERSION"));
