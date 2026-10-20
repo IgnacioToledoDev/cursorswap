@@ -96,5 +96,11 @@ Route legend: D = delegated writer, I = inline. Trigger evidence: writer trigger
 - Branch and repo created, no source written yet.
 - Engram mirror `odd/cambia-cursor-mvp/tasks`: PENDING. `mem_save` refused (`session_project_mismatch`: session bound to project "nocti", repo is "cambia-cursor"). Resync once a session bound to this repo exists.
 
+## Rename (post-T8, user decision)
+- Project renamed `cambia-cursor` -> `cursorswap` (user picked it from three crates.io-free candidates). Commit `c863644` on `feat/cambia-cursor-presentation`: crate/binary name, registry dir (`~/.config/cursorswap/`), help text, tests, and a new public English README. Repo directory moved to `~/workspace/cursorswap`. The feature id `cambia-cursor-mvp` and the branch names keep the old name on purpose (historical identity); earlier slice branches still carry the old crate name until merged.
+- Checks after rename: `cargo test` 298 passed (also from the new path), forced clippy 0 warnings, `fmt --check` clean (after `cargo fmt`, the shorter name changed one line wrap).
+- Native assessment of `14a673e..c863644`: medium (Cargo.lock), 334 lines, `review_due: false` (`under_budget`): stays pending in the slice; no consent asked.
+- Earlier README-only candidate: START returned `closed` (low risk), no review needed.
+
 ## Next step
 Resolve delivery chain strategy, then start T1 (RED first).
