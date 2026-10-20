@@ -135,11 +135,11 @@ impl App {
     /// else is in progress; otherwise the offer waits for the next idle moment.
     pub fn on_update_status(&mut self, status: UpdateStatus) {
         match status {
-            UpdateStatus::Available { latest } => {
+            UpdateStatus::Available { latest, .. } => {
                 self.update_offer = Some(latest);
                 self.open_pending_offer();
             }
-            UpdateStatus::Managed { latest, method } => {
+            UpdateStatus::Managed { latest, method, .. } => {
                 self.status = format!("cursorswap {latest} is available. {}", update_hint(method));
             }
             _ => {}
@@ -662,6 +662,7 @@ mod tests {
     fn available_v(version: &str) -> UpdateStatus {
         UpdateStatus::Available {
             latest: version.into(),
+            details: crate::presentation::update::fixture::link_only(),
         }
     }
 
@@ -771,6 +772,7 @@ mod tests {
         h.app.on_update_status(UpdateStatus::Managed {
             latest: "0.2.0".into(),
             method: crate::domain::update::InstallMethod::PackageManager,
+            details: crate::presentation::update::fixture::link_only(),
         });
         assert_eq!(h.app.mode, Mode::Browse);
         assert!(h.app.status.contains("0.2.0"), "{}", h.app.status);
@@ -784,6 +786,7 @@ mod tests {
                 latest: "0.1.0".into(),
             },
             UpdateStatus::Skipped {
+                details: crate::presentation::update::fixture::link_only(),
                 latest: "0.2.0".into(),
             },
             UpdateStatus::Unavailable("offline".into()),

@@ -309,6 +309,7 @@ mod tests {
         app.installed = "0.1.0".into();
         app.on_update_status(crate::application::update::UpdateStatus::Available {
             latest: "0.2.0".into(),
+            details: crate::presentation::update::fixture::link_only(),
         });
         (app, services)
     }

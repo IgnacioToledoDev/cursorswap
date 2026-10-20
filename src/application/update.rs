@@ -4,7 +4,9 @@ use crate::domain::error::UpdateError;
 use crate::domain::ports::{
     BinaryInstaller, Clock, InstallMethodDetector, ReleaseSource, UpdateStateStore,
 };
-use crate::domain::update::{InstallMethod, cache_is_fresh, is_newer};
+use crate::domain::update::{
+    InstallMethod, ReleaseDetails, cache_is_fresh, changelog_link, is_newer,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateStatus {
@@ -13,13 +15,16 @@ pub enum UpdateStatus {
     },
     Available {
         latest: String,
+        details: ReleaseDetails,
     },
     Skipped {
         latest: String,
+        details: ReleaseDetails,
     },
     Managed {
         latest: String,
         method: InstallMethod,
+        details: ReleaseDetails,
     },
     Unavailable(String),
 }
@@ -65,6 +70,8 @@ pub fn check_for_update(
             Ok(release) => {
                 state.checked_at = Some(clock.now_secs());
                 state.latest = Some(release.version.clone());
+                state.notes = release.notes;
+                state.release_url = release.url;
                 // A failed cache write only costs a later network call.
                 let _ = store.save(&state);
                 release.version
@@ -75,12 +82,25 @@ pub fn check_for_update(
     if !is_newer(installed, &latest) {
         return UpdateStatus::UpToDate { latest };
     }
+    let details = ReleaseDetails {
+        link: changelog_link(
+            installed,
+            &latest,
+            state.notes.as_ref(),
+            state.release_url.as_deref(),
+        ),
+        notes: state.notes,
+    };
     if options.honor_skip && state.skipped.as_deref() == Some(latest.as_str()) {
-        return UpdateStatus::Skipped { latest };
+        return UpdateStatus::Skipped { latest, details };
     }
     match detector.detect() {
-        InstallMethod::Standalone => UpdateStatus::Available { latest },
-        method => UpdateStatus::Managed { latest, method },
+        InstallMethod::Standalone => UpdateStatus::Available { latest, details },
+        method => UpdateStatus::Managed {
+            latest,
+            method,
+            details,
+        },
     }
 }
 
@@ -113,7 +133,7 @@ mod tests {
     use crate::application::fakes::{
         FakeClock, FakeDetector, FakeInstaller, FakeReleaseSource, FakeStateStore,
     };
-    use crate::domain::update::{CACHE_TTL_SECS, UpdateState};
+    use crate::domain::update::{CACHE_TTL_SECS, ReleaseNotes, UpdateState};
 
     const NOW: u64 = 1_000_000;
 
@@ -145,8 +165,22 @@ mod tests {
         check(source, store, InstallMethod::Standalone, CheckOptions::AUTO)
     }
 
+    fn page(v: &str) -> String {
+        format!("https://github.com/IgnacioToledoDev/cursorswap/releases/tag/v{v}")
+    }
+
+    fn details(v: &str) -> ReleaseDetails {
+        ReleaseDetails {
+            notes: None,
+            link: page(v),
+        }
+    }
+
     fn available(v: &str) -> UpdateStatus {
-        UpdateStatus::Available { latest: v.into() }
+        UpdateStatus::Available {
+            latest: v.into(),
+            details: details(v),
+        }
     }
 
     #[test]
@@ -237,7 +271,8 @@ mod tests {
         assert_eq!(
             auto(&FakeReleaseSource::failing(), &store),
             UpdateStatus::Skipped {
-                latest: "0.2.0".into()
+                latest: "0.2.0".into(),
+                details: details("0.2.0")
             }
         );
         let store = FakeStateStore::with(skipped("0.3.0"));
@@ -270,7 +305,8 @@ mod tests {
                 status,
                 UpdateStatus::Managed {
                     latest: "0.2.0".into(),
-                    method
+                    method,
+                    details: details("0.2.0")
                 }
             );
         }
@@ -291,6 +327,104 @@ mod tests {
         );
         assert_eq!(status, available("0.2.0"));
         assert_eq!(source.calls.get(), 1);
+    }
+
+    const FOOTER: &str = "## What's Changed\n* feat: thing by @a in https://github.com/o/r/pull/1\n\n**Full Changelog**: https://github.com/IgnacioToledoDev/cursorswap/compare/v{base}...v{latest}";
+
+    fn source_with_notes(latest: &str, base: &str) -> FakeReleaseSource {
+        let body = FOOTER.replace("{base}", base).replace("{latest}", latest);
+        let mut source = FakeReleaseSource::latest(latest);
+        let release = source.result.as_mut().unwrap();
+        release.notes = Some(ReleaseNotes::sanitize(&body));
+        release.url = Some(page(latest));
+        source
+    }
+
+    #[test]
+    fn fetched_notes_and_link_reach_the_offer_and_the_cache() {
+        let source = source_with_notes("0.2.0", "0.1.0");
+        let store = FakeStateStore::default();
+        let UpdateStatus::Available { details, .. } = auto(&source, &store) else {
+            panic!("expected an offer");
+        };
+        assert!(
+            details
+                .notes
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("feat: thing")
+        );
+        assert_eq!(details.link, page("0.2.0"));
+        let saved = store.state.borrow().clone();
+        assert_eq!(saved.notes, details.notes);
+        assert_eq!(saved.release_url.as_deref(), Some(page("0.2.0").as_str()));
+    }
+
+    #[test]
+    fn a_fresh_cache_serves_notes_without_a_request() {
+        let source = FakeReleaseSource::failing();
+        let notes = ReleaseNotes::sanitize("* cached change");
+        let store = FakeStateStore::with(UpdateState {
+            notes: Some(notes.clone()),
+            release_url: Some(page("0.2.0")),
+            ..cached("0.2.0", 60)
+        });
+        let UpdateStatus::Available { details, .. } = auto(&source, &store) else {
+            panic!("expected an offer");
+        };
+        assert_eq!(details.notes, Some(notes));
+        assert_eq!(details.link, page("0.2.0"));
+        assert_eq!(source.calls.get(), 0);
+    }
+
+    #[test]
+    fn an_old_cache_without_notes_shows_only_the_link() {
+        let store = FakeStateStore::with(cached("0.2.0", 60));
+        assert_eq!(
+            auto(&FakeReleaseSource::failing(), &store),
+            available("0.2.0")
+        );
+    }
+
+    #[test]
+    fn a_refresh_without_notes_drops_stale_cached_notes() {
+        let store = FakeStateStore::with(UpdateState {
+            notes: Some(ReleaseNotes::sanitize("* old")),
+            release_url: Some(page("0.2.0")),
+            ..cached("0.2.0", CACHE_TTL_SECS)
+        });
+        auto(&FakeReleaseSource::latest("0.3.0"), &store);
+        let saved = store.state.borrow().clone();
+        assert_eq!((saved.notes, saved.release_url), (None, None));
+    }
+
+    #[test]
+    fn a_jump_over_versions_offers_the_compare_link() {
+        let source = source_with_notes("0.3.0", "0.2.0");
+        let UpdateStatus::Available { details, .. } = auto(&source, &FakeStateStore::default())
+        else {
+            panic!("expected an offer");
+        };
+        assert_eq!(
+            details.link,
+            "https://github.com/IgnacioToledoDev/cursorswap/compare/v0.1.0...v0.3.0"
+        );
+        assert!(details.notes.is_some());
+    }
+
+    #[test]
+    fn managed_installs_carry_the_notes_too() {
+        let status = check(
+            &source_with_notes("0.2.0", "0.1.0"),
+            &FakeStateStore::default(),
+            InstallMethod::Cargo,
+            CheckOptions::AUTO,
+        );
+        let UpdateStatus::Managed { details, .. } = status else {
+            panic!("expected a notice");
+        };
+        assert!(details.notes.is_some());
     }
 
     #[test]

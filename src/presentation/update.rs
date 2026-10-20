@@ -8,7 +8,7 @@ use crate::application::update::{
     CheckOptions, UpdateOutcome, UpdateStatus, apply_update, skip_version,
 };
 use crate::domain::ports::{BinaryInstaller, Relauncher, ReleaseSource, UpdateStateStore};
-use crate::domain::update::{Answer, parse_answer, update_hint};
+use crate::domain::update::{Answer, ReleaseDetails, parse_answer, update_hint};
 
 use super::exit_code::Exit;
 
@@ -46,8 +46,9 @@ pub fn startup_prompt(
         return Flow::Continue;
     }
     match (update.check)(CheckOptions::AUTO) {
-        UpdateStatus::Available { latest } => {
+        UpdateStatus::Available { latest, details } => {
             say(out, &announcement(&latest, &update.installed));
+            say(out, &release_block(&details));
             say(out, "Update now? [y]es / [n]o / [s]kip this version ");
             match read_answer(input) {
                 Answer::Yes => install_and_relaunch(update, out),
@@ -61,8 +62,13 @@ pub fn startup_prompt(
                 Answer::No => Flow::Continue,
             }
         }
-        UpdateStatus::Managed { latest, method } => {
+        UpdateStatus::Managed {
+            latest,
+            method,
+            details,
+        } => {
             say(out, &announcement(&latest, &update.installed));
+            say(out, &release_block(&details));
             say(out, &format!("{}\n", update_hint(method)));
             Flow::Continue
         }
@@ -126,12 +132,20 @@ pub fn run_update_command(
             );
             Exit::Success
         }
-        UpdateStatus::Managed { latest, method } => {
+        UpdateStatus::Managed {
+            latest,
+            method,
+            details,
+        } => {
             let hint = update_hint(method);
             if check_only {
                 say(
                     out,
-                    &format!("{}An update is available. {hint}\n", versions(&latest)),
+                    &format!(
+                        "{}{}An update is available. {hint}\n",
+                        versions(&latest),
+                        release_block(&details)
+                    ),
                 );
                 Exit::UpdateAvailable
             } else {
@@ -139,15 +153,20 @@ pub fn run_update_command(
                 Exit::Error
             }
         }
-        UpdateStatus::Available { latest } | UpdateStatus::Skipped { latest } => {
+        UpdateStatus::Available { latest, details } | UpdateStatus::Skipped { latest, details } => {
             if check_only {
                 say(
                     out,
-                    &format!("{}An update is available.\n", versions(&latest)),
+                    &format!(
+                        "{}{}An update is available.\n",
+                        versions(&latest),
+                        release_block(&details)
+                    ),
                 );
                 return Exit::UpdateAvailable;
             }
             if !yes {
+                say(out, &release_block(&details));
                 say(
                     out,
                     &format!("Update cursorswap {installed} -> {latest}? [y/N] "),
@@ -179,6 +198,18 @@ fn announcement(latest: &str, installed: &str) -> String {
     format!("A new version of cursorswap is available: {latest} (you have {installed}).\n")
 }
 
+/// The sanitized notes (when there are any) followed by the changelog link.
+fn release_block(details: &ReleaseDetails) -> String {
+    let mut block = String::new();
+    if let Some(notes) = &details.notes {
+        block.push('\n');
+        block.push_str(notes.as_str());
+        block.push_str("\n\n");
+    }
+    block.push_str(&format!("Changelog: {}\n", details.link));
+    block
+}
+
 fn say(out: &mut dyn Write, text: &str) {
     // A closed pipe must not turn a finished command into a failure.
     let _ = out.write_all(text.as_bytes());
@@ -202,7 +233,7 @@ pub(crate) mod fixture {
     use crate::application::fakes::{
         FakeInstaller, FakeRelauncher, FakeReleaseSource, FakeStateStore,
     };
-    use crate::domain::update::ReleaseInfo;
+    use crate::domain::update::{ReleaseDetails, ReleaseInfo, ReleaseNotes};
 
     /// What the fakes recorded.
     pub struct Probe {
@@ -251,9 +282,26 @@ pub(crate) mod fixture {
         }
     }
 
+    pub const PAGE: &str = "https://github.com/IgnacioToledoDev/cursorswap/releases/tag/v0.2.0";
+
+    pub fn link_only() -> ReleaseDetails {
+        ReleaseDetails {
+            notes: None,
+            link: PAGE.into(),
+        }
+    }
+
+    pub fn with_notes(raw: &str) -> ReleaseDetails {
+        ReleaseDetails {
+            notes: Some(ReleaseNotes::sanitize(raw)),
+            link: PAGE.into(),
+        }
+    }
+
     pub fn available() -> UpdateStatus {
         UpdateStatus::Available {
             latest: "0.2.0".into(),
+            details: link_only(),
         }
     }
 
@@ -303,9 +351,9 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
-    use super::fixture::{Options, available, build};
+    use super::fixture::{Options, PAGE, available, build, link_only, with_notes};
     use super::*;
-    use crate::domain::update::InstallMethod;
+    use crate::domain::update::{InstallMethod, ReleaseDetails};
 
     struct Run {
         flow: Flow,
@@ -428,6 +476,7 @@ mod tests {
             let status = UpdateStatus::Managed {
                 latest: "0.2.0".into(),
                 method,
+                details: link_only(),
             };
             let (run, f) = prompt(Options::with(status), "y\n");
             assert_eq!(run.flow, Flow::Continue);
@@ -446,6 +495,7 @@ mod tests {
             },
             UpdateStatus::Skipped {
                 latest: "0.2.0".into(),
+                details: link_only(),
             },
             UpdateStatus::Unavailable("offline".into()),
         ];
@@ -497,6 +547,7 @@ mod tests {
         UpdateStatus::Managed {
             latest: "0.2.0".into(),
             method: InstallMethod::PackageManager,
+            details: link_only(),
         }
     }
 
@@ -594,5 +645,107 @@ mod tests {
         );
         assert_eq!(exit, Exit::Error);
         assert!(String::from_utf8(err).unwrap().contains("checksum"));
+    }
+
+    const NOTES: &str = "## What's Changed\n* feat: faster swaps by @a in https://github.com/o/r/pull/1\n* fix: crash on empty theme by @b in https://github.com/o/r/pull/2";
+
+    fn available_with(details: ReleaseDetails) -> UpdateStatus {
+        UpdateStatus::Available {
+            latest: "0.2.0".into(),
+            details,
+        }
+    }
+
+    #[test]
+    fn startup_prompt_shows_notes_and_link_before_the_question() {
+        let (run, _) = prompt(Options::with(available_with(with_notes(NOTES))), "n\n");
+        let at = |needle: &str| {
+            run.out
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle}\n{}", run.out))
+        };
+        assert!(at("is available: 0.2.0") < at("What's Changed:"));
+        assert!(at("feat: faster swaps") < at(PAGE));
+        assert!(at(PAGE) < at("Update now?"));
+    }
+
+    #[test]
+    fn startup_prompt_without_notes_shows_only_the_link() {
+        let (run, _) = offer("n\n");
+        assert!(run.out.contains(PAGE), "{}", run.out);
+        assert!(!run.out.contains("What's Changed"));
+        assert!(run.out.contains("Update now?"));
+    }
+
+    #[test]
+    fn startup_prompt_prints_at_most_twenty_note_lines() {
+        let raw: String = (1..=100).map(|i| format!("* change {i}\n")).collect();
+        let (run, _) = prompt(Options::with(available_with(with_notes(&raw))), "n\n");
+        let notes = run.out.lines().filter(|l| l.contains("change ")).count();
+        assert!(notes <= 20, "{notes}");
+        assert!(run.out.contains("(truncated)"));
+    }
+
+    #[test]
+    fn hostile_notes_reach_the_terminal_without_control_bytes() {
+        let details = with_notes("\u{1b}[2J\u{1b}]52;c;AAAA\u{7}* ok\u{9b}31m");
+        let (run, _) = prompt(Options::with(available_with(details)), "n\n");
+        assert!(run.out.contains("ok"));
+        let stray = run.out.chars().filter(|c| c.is_control() && *c != '\n');
+        assert_eq!(stray.count(), 0, "{:?}", run.out);
+    }
+
+    #[test]
+    fn managed_notice_includes_the_notes() {
+        let status = UpdateStatus::Managed {
+            latest: "0.2.0".into(),
+            method: InstallMethod::Cargo,
+            details: with_notes(NOTES),
+        };
+        let (run, _) = prompt(Options::with(status), "");
+        assert!(run.out.contains("feat: faster swaps"), "{}", run.out);
+        assert!(run.out.contains(PAGE));
+        assert!(run.out.contains("cargo install"));
+    }
+
+    #[test]
+    fn check_prints_notes_and_link_without_installing() {
+        let (cmd, f) = command(available_with(with_notes(NOTES)), true, false, "");
+        assert_eq!(cmd.exit, Exit::UpdateAvailable);
+        assert!(cmd.out.contains("feat: faster swaps"), "{}", cmd.out);
+        assert!(cmd.out.contains(PAGE));
+        assert!(f.installed.borrow().is_empty());
+    }
+
+    #[test]
+    fn check_for_managed_installs_prints_notes_too() {
+        let status = UpdateStatus::Managed {
+            latest: "0.2.0".into(),
+            method: InstallMethod::PackageManager,
+            details: with_notes(NOTES),
+        };
+        let (cmd, _) = command(status, true, false, "");
+        assert!(cmd.out.contains("fix: crash on empty theme"), "{}", cmd.out);
+        assert!(cmd.out.contains(PAGE));
+    }
+
+    #[test]
+    fn update_shows_the_notes_before_asking_but_not_with_yes() {
+        let (cmd, _) = command(available_with(with_notes(NOTES)), false, false, "n\n");
+        let at = |needle: &str| {
+            cmd.out
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle}\n{}", cmd.out))
+        };
+        assert!(at("feat: faster swaps") < at(PAGE));
+        assert!(at(PAGE) < at("[y/N]"));
+        let (cmd, _) = command(available_with(with_notes(NOTES)), false, true, "");
+        assert!(!cmd.out.contains("feat: faster swaps"), "{}", cmd.out);
+    }
+
+    #[test]
+    fn check_without_notes_prints_the_link() {
+        let (cmd, _) = command(available(), true, false, "");
+        assert!(cmd.out.contains(PAGE), "{}", cmd.out);
     }
 }
