@@ -1,7 +1,7 @@
 //! Composition root: the only place that knows every concrete type.
 
 use std::ffi::OsString;
-use std::io::{self, IsTerminal};
+use std::io::{self, BufRead, IsTerminal};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -164,6 +164,18 @@ pub fn build_update_services(
     }
 }
 
+/// Reader handed to the update prompts. It must not hold the stdin lock between
+/// calls: `TerminalConfirm` takes the same lock later in the same run.
+///
+/// The private buffer is harmless here: the prompts only run on a terminal,
+/// which delivers one line per read, and `TerminalConfirm` refuses any stdin
+/// that is not a terminal.
+fn stdin_reader() -> impl BufRead {
+    // `Stdin` locks per read call and releases the lock right after, unlike
+    // the guard from `Stdin::lock`, which would be held for the whole run.
+    io::BufReader::new(io::stdin())
+}
+
 /// Parses the command line, wires the real adapters and runs the command.
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
@@ -202,7 +214,7 @@ pub fn run(
     let exit = execute(
         cli,
         &mut services,
-        &mut io::stdin().lock(),
+        &mut stdin_reader(),
         &mut io::stdout(),
         &mut io::stderr(),
     );
@@ -212,6 +224,22 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdin_reader_does_not_hold_the_stdin_lock() {
+        // Holding the lock here would deadlock `TerminalConfirm`, which locks
+        // stdin again later in the same run (seen as a hang in `install`).
+        let reader = stdin_reader();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _guard = io::stdin().lock();
+            let _ = tx.send(());
+        });
+        let acquired = rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        drop(reader);
+        assert!(acquired, "stdin_reader() keeps stdin locked");
+    }
+
     use crate::infrastructure::FakeRunner;
     use crate::presentation::update::fixture;
 
