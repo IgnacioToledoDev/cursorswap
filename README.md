@@ -178,7 +178,7 @@ Good to know:
 
 ## Configuration
 
-The registry is a plain TOML file at `$XDG_CONFIG_HOME/cursorswap/registry.toml` (default `~/.config/cursorswap/registry.toml`). You can edit it by hand:
+The registry is a plain TOML file at `$XDG_CONFIG_HOME/cursorswap/conf/registry.toml` (default `~/.config/cursorswap/conf/registry.toml`). You can edit it by hand:
 
 ```toml
 [[cursor]]
