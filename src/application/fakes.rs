@@ -137,6 +137,7 @@ impl CurrentCursorProvider for FakeCurrent {
 /// Preview loader that records every requested theme path and state.
 pub struct FakePreviewLoader {
     result: Result<Preview, String>,
+    missing: Vec<CursorState>,
     pub loads: Rc<RefCell<Vec<PathBuf>>>,
     pub states: Rc<RefCell<Vec<CursorState>>>,
 }
@@ -145,14 +146,24 @@ impl FakePreviewLoader {
     pub fn returning(preview: Preview) -> Self {
         FakePreviewLoader {
             result: Ok(preview),
+            missing: Vec::new(),
             loads: Rc::default(),
             states: Rc::default(),
+        }
+    }
+
+    /// Like `returning`, but the theme has no cursor for `state`.
+    pub fn lacking(preview: Preview, state: CursorState) -> Self {
+        FakePreviewLoader {
+            missing: vec![state],
+            ..Self::returning(preview)
         }
     }
 
     pub fn failing(message: &str) -> Self {
         FakePreviewLoader {
             result: Err(message.to_string()),
+            missing: Vec::new(),
             loads: Rc::default(),
             states: Rc::default(),
         }
@@ -163,6 +174,12 @@ impl PreviewLoader for FakePreviewLoader {
     fn load_state(&self, theme: &CursorTheme, state: CursorState) -> Result<Preview, PreviewError> {
         self.loads.borrow_mut().push(theme.path.clone());
         self.states.borrow_mut().push(state);
+        if self.missing.contains(&state) {
+            return Err(PreviewError::Unavailable(format!(
+                "none of {} found",
+                state.candidates().join(", ")
+            )));
+        }
         self.result.clone().map_err(PreviewError::Unavailable)
     }
 }

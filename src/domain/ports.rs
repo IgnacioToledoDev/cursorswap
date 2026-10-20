@@ -25,6 +25,7 @@ pub trait PreviewLoader {
     fn load_state(&self, theme: &CursorTheme, state: CursorState) -> Result<Preview, PreviewError>;
 
     /// Loads the default arrow, the cursor shown when no state is chosen.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn load(&self, theme: &CursorTheme) -> Result<Preview, PreviewError> {
         self.load_state(theme, CursorState::Default)
     }
@@ -32,8 +33,6 @@ pub trait PreviewLoader {
 
 /// A cursor state a theme can draw differently, such as the link hand or the
 /// busy indicator.
-// The TUI selector that consumes every state lands in the next change.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CursorState {
     Default,
@@ -50,7 +49,6 @@ pub enum CursorState {
     EwResize,
 }
 
-#[allow(dead_code)]
 impl CursorState {
     /// Every state in selector order: the core states first.
     pub const ALL: [CursorState; 12] = [

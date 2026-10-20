@@ -3,6 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect, Size};
 use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui_image::Image;
 
@@ -130,12 +131,16 @@ fn render_preview(frame: &mut Frame, app: &App, area: Rect) {
         Some(theme) => format!(" {} - {} ", theme.name, theme.path.display()),
         None => " Preview ".to_string(),
     };
-    let block = Block::bordered().title(title);
+    let mut block = Block::bordered().title(title);
+    if app.selected_theme().is_some() {
+        let state = format!(" state: {} ", app.state.label());
+        block = block.title_top(Line::from(state).right_aligned());
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     match app.selected_preview() {
         Some(PreviewEntry::Failed(message)) => {
-            let text = format!("no preview\n{message}");
+            let text = format!("no preview for {}\n{message}", app.state.label());
             let notice = Paragraph::new(text)
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: true });
@@ -174,7 +179,7 @@ mod tests {
         FakeCurrent, FakeInspector, FakePreviewLoader, FakeRepository, theme,
     };
     use crate::domain::cursor::CursorTheme;
-    use crate::domain::ports::{Preview, PreviewFrame};
+    use crate::domain::ports::{CursorState, Preview, PreviewFrame};
     use crate::presentation::Services;
 
     fn two_tone() -> Preview {
@@ -304,6 +309,31 @@ mod tests {
         let (mut app, _s) = app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
         let text = screen(&draw(&mut app, 100, 20));
         assert!(text.contains("Nordzy - /icons/Nordzy"), "{text}");
+    }
+
+    #[test]
+    fn the_preview_title_names_the_selected_state() {
+        let (mut app, mut s) = app_with(themes(), None, FakePreviewLoader::returning(two_tone()));
+        assert!(screen(&draw(&mut app, 100, 20)).contains("state: default"));
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+            &mut s,
+        );
+        let text = screen(&draw(&mut app, 100, 20));
+        assert!(text.contains("state: pointer"), "{text}");
+        assert!(text.contains("Nordzy - /icons/Nordzy"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_state_shows_a_placeholder_naming_it() {
+        let loader = FakePreviewLoader::lacking(two_tone(), CursorState::Pointer);
+        let (mut app, mut s) = app_with(themes(), None, loader);
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+            &mut s,
+        );
+        let text = screen(&draw(&mut app, 100, 20));
+        assert!(text.contains("no preview for pointer"), "{text}");
     }
 
     #[test]
