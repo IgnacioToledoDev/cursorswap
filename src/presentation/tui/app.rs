@@ -21,7 +21,7 @@ use crate::domain::cursor::CursorTheme;
 use crate::domain::error::ConfirmError;
 use crate::domain::package::PackageInfo;
 use crate::domain::ports::{Confirm, CursorState};
-use crate::domain::update::update_hint;
+use crate::domain::update::{ReleaseDetails, update_hint};
 use crate::presentation::Services;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,13 @@ pub enum Outcome {
     Install(String),
 }
 
+/// A newer release found by the background check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateOffer {
+    pub version: String,
+    pub details: ReleaseDetails,
+}
+
 pub struct App {
     pub themes: Vec<CursorTheme>,
     pub selected: usize,
@@ -56,8 +63,8 @@ pub struct App {
     pub state: CursorState,
     pub input: String,
     pub status: String,
-    /// The newer version offered by the background check, until answered.
-    pub update_offer: Option<String>,
+    /// The newer release offered by the background check, until answered.
+    pub update_offer: Option<UpdateOffer>,
     pub installed: String,
     /// AUR search results and the highlighted one.
     pub results: Vec<PackageInfo>,
@@ -136,11 +143,14 @@ impl App {
     /// else is in progress; otherwise the offer waits for the next idle moment.
     pub fn on_update_status(&mut self, status: UpdateStatus) {
         match status {
-            UpdateStatus::Available { latest } => {
-                self.update_offer = Some(latest);
+            UpdateStatus::Available { latest, details } => {
+                self.update_offer = Some(UpdateOffer {
+                    version: latest,
+                    details,
+                });
                 self.open_pending_offer();
             }
-            UpdateStatus::Managed { latest, method } => {
+            UpdateStatus::Managed { latest, method, .. } => {
                 self.status = format!("cursorswap {latest} is available. {}", update_hint(method));
             }
             _ => {}
@@ -220,8 +230,8 @@ impl App {
         match code {
             KeyCode::Char('y') => {
                 self.mode = Mode::Browse;
-                if let Some(version) = self.update_offer.take() {
-                    return Outcome::Update(version);
+                if let Some(offer) = self.update_offer.take() {
+                    return Outcome::Update(offer.version);
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => {
@@ -230,8 +240,8 @@ impl App {
             }
             KeyCode::Char('s') => {
                 self.mode = Mode::Browse;
-                if let Some(version) = self.update_offer.take()
-                    && let Err(err) = skip_version(services.update.store.as_ref(), &version)
+                if let Some(offer) = self.update_offer.take()
+                    && let Err(err) = skip_version(services.update.store.as_ref(), &offer.version)
                 {
                     self.status = format!("could not remember the choice: {err}");
                 }
@@ -697,6 +707,7 @@ mod tests {
     fn available_v(version: &str) -> UpdateStatus {
         UpdateStatus::Available {
             latest: version.into(),
+            details: crate::presentation::update::fixture::link_only(),
         }
     }
 
@@ -705,7 +716,9 @@ mod tests {
         let (mut h, _) = update_harness();
         h.app.on_update_status(available_v("0.2.0"));
         assert_eq!(h.app.mode, Mode::UpdatePrompt);
-        assert_eq!(h.app.update_offer.as_deref(), Some("0.2.0"));
+        let offer = h.app.update_offer.as_ref().unwrap();
+        assert_eq!(offer.version, "0.2.0");
+        assert!(offer.details.notes.is_none());
     }
 
     #[test]
@@ -806,6 +819,7 @@ mod tests {
         h.app.on_update_status(UpdateStatus::Managed {
             latest: "0.2.0".into(),
             method: crate::domain::update::InstallMethod::PackageManager,
+            details: crate::presentation::update::fixture::link_only(),
         });
         assert_eq!(h.app.mode, Mode::Browse);
         assert!(h.app.status.contains("0.2.0"), "{}", h.app.status);
@@ -819,6 +833,7 @@ mod tests {
                 latest: "0.1.0".into(),
             },
             UpdateStatus::Skipped {
+                details: crate::presentation::update::fixture::link_only(),
                 latest: "0.2.0".into(),
             },
             UpdateStatus::Unavailable("offline".into()),

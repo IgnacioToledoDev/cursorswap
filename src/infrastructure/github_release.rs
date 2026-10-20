@@ -4,7 +4,10 @@ use serde::Deserialize;
 
 use crate::domain::error::UpdateError;
 use crate::domain::ports::ReleaseSource;
-use crate::domain::update::{BINARY_ASSET, CHECKSUM_ASSET, REPOSITORY, ReleaseInfo, parse_version};
+use crate::domain::update::{
+    BINARY_ASSET, CHECKSUM_ASSET, REPOSITORY, ReleaseInfo, ReleaseNotes, parse_version,
+    release_page_url,
+};
 
 use super::http::HttpGet;
 
@@ -19,6 +22,10 @@ struct ReleaseDto {
     prerelease: bool,
     #[serde(default)]
     assets: Vec<AssetDto>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +64,12 @@ pub fn parse_release(json: &str) -> Result<ReleaseInfo, UpdateError> {
         version: version.to_string(),
         binary_url,
         checksum_url,
+        notes: dto
+            .body
+            .as_deref()
+            .map(ReleaseNotes::sanitize)
+            .filter(|notes| !notes.is_empty()),
+        url: dto.html_url.as_deref().and_then(release_page_url),
     })
 }
 
@@ -113,6 +126,67 @@ mod tests {
         assert_eq!(release.version, "0.2.0");
         assert_eq!(release.binary_url, BIN);
         assert_eq!(release.checksum_url, format!("{BIN}.sha256"));
+    }
+
+    fn with_extras(extras: &str) -> String {
+        let base = fixture("v0.2.0", false, false, &both_assets());
+        format!("{},{extras}}}", &base[..base.len() - 1])
+    }
+
+    #[test]
+    fn body_and_page_url_are_read_and_sanitized() {
+        let json = with_extras(
+            r###""html_url":"https://github.com/o/r/releases/tag/v0.2.0","body":"## What's Changed\r\n* fix \u001b[2Jthing\u001b]52;c;AAAA\u0007""###,
+        );
+        let release = parse_release(&json).unwrap();
+        assert_eq!(
+            release.notes.unwrap().as_str(),
+            "What's Changed:\n\u{2022} fix thing"
+        );
+        assert_eq!(
+            release.url.as_deref(),
+            Some("https://github.com/o/r/releases/tag/v0.2.0")
+        );
+    }
+
+    #[test]
+    fn missing_null_or_empty_bodies_yield_no_notes() {
+        for extras in [
+            r#""body":null"#,
+            r#""body":"""#,
+            r#""body":"  \n\u001b[2J\n""#,
+            r#""other":1"#,
+        ] {
+            let release = parse_release(&with_extras(extras)).unwrap();
+            assert_eq!(release.notes, None, "{extras}");
+        }
+    }
+
+    #[test]
+    fn foreign_or_non_https_page_urls_are_dropped() {
+        for url in [
+            "http://github.com/o/r",
+            "https://evil.example/o/r",
+            "javascript:alert(1)",
+            "",
+        ] {
+            let json = with_extras(&format!(r#""html_url":"{url}""#));
+            assert_eq!(parse_release(&json).unwrap().url, None, "{url}");
+        }
+        assert_eq!(
+            parse_release(&with_extras(r#""html_url":null"#))
+                .unwrap()
+                .url,
+            None
+        );
+    }
+
+    #[test]
+    fn a_huge_body_is_capped() {
+        let body = "x".repeat(200 * 1024);
+        let json = with_extras(&format!(r#""body":"{body}""#));
+        let notes = parse_release(&json).unwrap().notes.unwrap();
+        assert!(notes.as_str().len() <= 2048);
     }
 
     #[test]
